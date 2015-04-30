@@ -1,4 +1,5 @@
-// See https://github.com/elesel/callings-tracker
+var VERSION = '0.6';
+var ABOUT_URL = 'https://github.com/elesel/callings-tracker';
 
 var NAME_PARSER_FNF = /^(.+)\s+(\S+)$/; 
 var NAME_PARSER_LNF = /^(\S+?),\s+(.+)$/; 
@@ -58,19 +59,6 @@ for (var property in sheets) {
   }
 }
 Logger.log("sheets= " + JSON.stringify(sheets));
-
-/*
-function onChange(e) {
-  CacheService.getDocumentCache().put(DEFERRED_ON_CHANGE, true);
-}
-
-function onEdit(e) {
-  var cache = CacheService.getDocumentCache();
-  if (cache.get(DEFERRED_ON_CHANGE)) {
-    cache.remove(DEFERRED_ON_CHANGE);
-  }
-}
-*/
 
 function onChange(e) {
   Logger.log("In onChange()");
@@ -165,6 +153,7 @@ function onOpen() {
     .addItem('Update calling status', 'updateAllCallingStatus')
     .addItem('Print pending callings', 'printPendingCallings')
     .addItem('Download members list', 'downloadMembers')
+    .addItem('About', 'showAbout')
     .addToUi();
 };
 
@@ -853,4 +842,8 @@ function moveRows(sourceSheet, targetSheet, startRow, numRows, targetRow) {
   sourceSheet.ref.deleteRows(startRow, numRows);
   
   return targetRange;
+}
+
+function showAbout() {
+  SpreadsheetApp.getUi().alert('callings-tracker v' + VERSION + '\n' + ABOUT_URL);
 }
