@@ -763,11 +763,11 @@ function printPendingCallings() {
   
   // Send to user
   doc.saveAndClose();
-  //var pdfUrl = 'https://docs.google.com/document/d/' + doc.getId() + '/export?format=pdf';
-  //SpreadsheetApp.getUi().alert('Printable version is located at ' + pdfUrl);
+  var pdfUrl = 'https://docs.google.com/document/d/' + doc.getId() + '/export?format=pdf';
+  SpreadsheetApp.getUi().alert('Printable version is located at ' + pdfUrl);
   
   // Delete
-  //DriveApp.getFileById(doc.getId()).setTrashed(true);
+  DriveApp.getFileById(doc.getId()).setTrashed(true);
 }
 
 function setTableStyle(table) {
