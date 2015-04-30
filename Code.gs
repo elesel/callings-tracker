@@ -1,4 +1,5 @@
-var VERSION = '0.6';
+// See https://github.com/elesel/callings-tracker
+var VERSION = '0.6.1';
 var ABOUT_URL = 'https://github.com/elesel/callings-tracker';
 
 var NAME_PARSER_FNF = /^(.+)\s+(\S+)$/; 
@@ -465,13 +466,13 @@ function updateCallingStatus(sheet, startRow, numRows) {
       var pid = row[sheet.columns["PID"] - 1];
       var actionIndex = actionNames.indexOf(action);
       var positionIndex = positionNames.indexOf(positionName);
-      if (status != action) {
+      if (status !== action) {
         row[sheet.columns["Status"] - 1] = action;
       }
-      if (sid != actionIndex) {
+      if (sid !== actionIndex) {
         row[sheet.columns["SID"] - 1] = actionIndex;
       }
-      if (pid != positionIndex) {
+      if (pid !== positionIndex) {
         row[sheet.columns["PID"] - 1] = positionIndex;
       }
     } else {
@@ -659,9 +660,12 @@ function printPendingCallings() {
   
   // Create header and footer
   var header = doc.addHeader();
-  header.appendTable([['Pending Callings', ''],['Confidential', 'Printed at <now>']]);
+  header.appendParagraph('Pending Callings - Confidential');
+  header.appendParagraph('Printed at ' + formatDate(Date()));
+  header.appendHorizontalRule();
   var footer = doc.addFooter();
-  footer.appendTable([['Confidential']]);
+  footer.appendHorizontalRule();
+  footer.appendParagraph('Confidential');
   
   // Create styles
   var sectionHeaderStyle = {};
