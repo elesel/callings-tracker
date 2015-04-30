@@ -1,13 +1,4 @@
-/*
-TODO
-Speed up organizeCallings()
-Print pending callings
-Add members lookup
-Switch from "Action" term to "Status" in code
-Handle renaming positions, lifecycles
-Highlight next action, and/or gray out irrelevant actions
-Add check for column existence
-*/
+// See https://github.com/elesel/callings-tracker
 
 var NAME_PARSER_FNF = /^(.+)\s+(\S+)$/; 
 var NAME_PARSER_LNF = /^(\S+?),\s+(.+)$/; 
@@ -578,36 +569,6 @@ function organizeCallings() {
           }
         });
       }
-      
-      /*
-      for (var r = sheet.topRow; r <= numRows; r++) {
-        var statusRange = sheet.ref.getRange(r, sheet.columns["Status"]);
-        if (! statusRange.isBlank()) {
-          var action = statusRange.getValue();
-          // Move row to the right sheet
-          var callingsSheet = actionSheets[action];
-          if (callingsSheet != sheet) {
-            var rangeToMove = sheet.ref.getRange(r, 1, 1, sheet.ref.getMaxColumns());
-            callingsSheet.ref.insertRows(callingsSheet.topRow);
-            var targetRange = callingsSheet.ref.getRange(callingsSheet.topRow, 1);
-            rangeToMove.moveTo(targetRange);
-            if (callingsSheet != sheets.archivedCallings) {
-              targetRange.clearDataValidations();
-            }
-            // TODO: Remove validations from row?
-            
-            // Delete row from original sheet
-            sheet.ref.deleteRow(r);
-            r--;
-            numRows--;
-            
-            // Record affected sheets
-            changedSheets.push(sheet);
-            changedSheets.push(callingsSheet);
-          }    
-        }
-      }
-      */
     });
     changedSheets = changedSheets.filter(onlyUnique);
     
@@ -691,7 +652,191 @@ function sliceSingleColumn(grid, startRow, numRows, columnNumber) {
 }
 
 function printPendingCallings() {
-  SpreadsheetApp.getUi().alert("To be implemented...");
+  // Get/create "temporary" document to use for the printout
+  // TODO: Add support to reuse existing document
+  //var doc = DocumentApp.openById('DOCUMENT_ID_GOES_HERE');
+  // Create new one
+  var documentName = SpreadsheetApp.getActiveSpreadsheet().getName() + "-Printable";
+  var doc = DocumentApp.create(documentName);
+  var body = doc.getBody();
+  
+  // Set page margins
+  var margin = 36;
+  doc.getBody()
+    .setMarginTop(margin)
+    .setMarginBottom(margin)
+    .setMarginLeft(margin)
+    .setMarginRight(margin);
+  
+  // Create header and footer
+  var header = doc.addHeader();
+  header.appendTable([['Pending Callings', ''],['Confidential', 'Printed at <now>']]);
+  var footer = doc.addFooter();
+  footer.appendTable([['Confidential']]);
+  
+  // Create styles
+  var sectionHeaderStyle = {};
+  sectionHeaderStyle[DocumentApp.Attribute.FONT_FAMILY] = 'Calibri';
+  sectionHeaderStyle[DocumentApp.Attribute.FONT_SIZE] = 18;
+  sectionHeaderStyle[DocumentApp.Attribute.BOLD] = true;
+  
+  // Create section for write-ins
+  body.appendParagraph('Nominations').setAttributes(sectionHeaderStyle);
+  var table = body.appendTable([
+    ['Position', 'Name', 'Unit', 'BP', 'TR', 'SP', 'HC'],
+    ['______________________________', '____________________________', '_____', '☐', '☐', '    /    /    ', '    /    /    '],
+    ['______________________________', '____________________________', '_____', '☐', '☐', '    /    /    ', '    /    /    '],
+    ['______________________________', '____________________________', '_____', '☐', '☐', '    /    /    ', '    /    /    '],
+    ['______________________________', '____________________________', '_____', '☐', '☐', '    /    /    ', '    /    /    ']
+  ]);
+  setTableStyle(table);
+  table.setColumnWidth(0, inchesToPoints(2.125));
+  table.setColumnWidth(1, inchesToPoints(2));
+  table.setColumnWidth(2, inchesToPoints(.375));
+  table.setColumnWidth(3, inchesToPoints(.25));
+  table.setColumnWidth(4, inchesToPoints(.25));
+  table.setColumnWidth(5, inchesToPoints(.675));
+  table.setColumnWidth(6, inchesToPoints(.675));
+  centerTableColumn(table, 3);
+  centerTableColumn(table, 4);
+  centerTableColumn(table, 5);
+  centerTableColumn(table, 6);
+  
+  // Sort pending sheet
+  var sheet = sheets.pendingCallings;
+  sortCallings(sheets.pendingCallings);
+  
+  // Get data and iterate through it
+  var lastAction = null;
+  var table = null;
+  var allData = sheet.ref.getRange(sheet.topRow, 1, sheet.ref.getLastRow() - sheet.topRow + 1, sheet.ref.getLastColumn()).getValues();
+  for (var r = 0; r < allData.length; r++) {
+    var row = allData[r];
+    var action = row[sheet.columns["Status"] - 1];
+    if (action != lastAction) {
+      // Start new table
+      body.appendParagraph(action).setAttributes(sectionHeaderStyle);
+      table = body.appendTable([
+        ['Position', 'Name', 'Unit', 'BP', 'TR', 'SP', 'HC', 'Interview', 'Sustain', 'Set Apart']
+      ]);
+      setTableStyle(table);
+      table.setColumnWidth(0, inchesToPoints(1.75));
+      table.setColumnWidth(1, inchesToPoints(1.375));
+      table.setColumnWidth(2, inchesToPoints(.375));
+      table.setColumnWidth(3, inchesToPoints(.25));
+      table.setColumnWidth(4, inchesToPoints(.25));
+      table.setColumnWidth(5, inchesToPoints(.675));
+      table.setColumnWidth(6, inchesToPoints(.675));
+      table.setColumnWidth(7, inchesToPoints(.675));
+      table.setColumnWidth(8, inchesToPoints(.675));
+      table.setColumnWidth(9, inchesToPoints(.675));
+      centerTableColumn(table, 3);
+      centerTableColumn(table, 4);
+      centerTableColumn(table, 5);
+      centerTableColumn(table, 6);
+      centerTableColumn(table, 7);
+      centerTableColumn(table, 8);
+      centerTableColumn(table, 9);
+    }
+    // Add row to the table
+    var tableRow = table.appendTableRow();
+    var position = row[sheet.columns["Position"] - 1] || '________________________';
+    var name = row[sheet.columns["Name"] - 1] || '___________________';
+    var unit = row[sheet.columns["Unit"] - 1] || '_____';
+    var bishop = (row[sheet.columns["Bishop"] - 1] ? '☒' : '☐');
+    var templeRecommend = row[sheet.columns["TR"] - 1] || '☐';
+    var stakePresidency = formatDate(row[sheet.columns["Stake presidency"] - 1]) || '    /    /    ';
+    var highCouncil = formatDate(row[sheet.columns["High council"] - 1]) || '    /    /    ';
+    var interview = formatDate(row[sheet.columns["Interview"] - 1]) || '    /    /    ';
+    var sustain = formatDate(row[sheet.columns["Sustain"] - 1]) || '    /    /    ';
+    var setApart = formatDate(row[sheet.columns["Set Apart"] - 1]) || '    /    /    ';
+    tableRow.appendTableCell(position);
+    tableRow.appendTableCell(name);
+    tableRow.appendTableCell(unit);
+    tableRow.appendTableCell(bishop);
+    tableRow.appendTableCell(templeRecommend);
+    tableRow.appendTableCell(stakePresidency);
+    tableRow.appendTableCell(highCouncil);
+    tableRow.appendTableCell(interview);
+    tableRow.appendTableCell(sustain);
+    tableRow.appendTableCell(setApart);
+    setTableRowStyle(tableRow);
+    centerTableRowColumn(tableRow, 3);
+    centerTableRowColumn(tableRow, 4);
+    centerTableRowColumn(tableRow, 5);
+    centerTableRowColumn(tableRow, 6);
+    centerTableRowColumn(tableRow, 7);
+    centerTableRowColumn(tableRow, 8);
+    centerTableRowColumn(tableRow, 9);
+    
+    lastAction = action;
+  }
+  
+  // Send to user
+  doc.saveAndClose();
+  //var pdfUrl = 'https://docs.google.com/document/d/' + doc.getId() + '/export?format=pdf';
+  //SpreadsheetApp.getUi().alert('Printable version is located at ' + pdfUrl);
+  
+  // Delete
+  //DriveApp.getFileById(doc.getId()).setTrashed(true);
+}
+
+function setTableStyle(table) {
+  var gridHeaderStyle = {};
+  gridHeaderStyle[DocumentApp.Attribute.FONT_FAMILY] = 'Calibri';
+  gridHeaderStyle[DocumentApp.Attribute.FONT_SIZE] = 10;
+  gridHeaderStyle[DocumentApp.Attribute.BOLD] = true;
+  
+  table.setBorderWidth(0);
+
+  for (var r = 0; r < table.getNumRows(); r++) {
+    var row = table.getRow(r);
+    setTableRowStyle(row);
+    if (r == 0) {
+      table.getRow(0).editAsText().setAttributes(gridHeaderStyle);
+    }
+  }
+}
+
+function setTableRowStyle(row) {
+  var gridNormalStyle = {};
+  gridNormalStyle[DocumentApp.Attribute.FONT_FAMILY] = 'Calibri';
+  gridNormalStyle[DocumentApp.Attribute.FONT_SIZE] = 10;
+  gridNormalStyle[DocumentApp.Attribute.BOLD] = false;
+  
+  row.editAsText().setAttributes(gridNormalStyle);
+  row.setMinimumHeight(inchesToPoints(.25));
+  for (var c = 0; c < row.getNumCells(); c++) {
+    var cell = row.getCell(c);
+    cell.setPaddingLeft(0);
+    cell.setPaddingRight(0);
+    cell.setPaddingTop(0);
+    cell.setPaddingBottom(0);
+  }
+}
+
+function centerTableColumn(table, columnNumber) {
+  for (var r = 0; r < table.getNumRows(); r++) {
+    var row = table.getRow(r);
+    centerTableRowColumn(row, columnNumber);
+  }
+}
+
+function centerTableRowColumn(row, columnNumber) {
+  var cell = row.getCell(columnNumber);
+  cell.getChild(0).setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+}
+  
+function inchesToPoints(inches) {
+  return inches * 72;
+}
+
+function formatDate(date) {
+  if (date instanceof Date) {
+    return (date.getMonth() + 1).toString() + '/' + date.getDate().toString() + '/' + date.getFullYear().toString().substr(2, 2);
+  } else {
+    return date;
+  }
 }
 
 function downloadMembers() {
