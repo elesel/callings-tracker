@@ -1,9 +1,9 @@
 // See https://github.com/elesel/callings-tracker
-var VERSION = '0.6.1';
+var VERSION = '0.7';
 var ABOUT_URL = 'https://github.com/elesel/callings-tracker';
 
-var NAME_PARSER_FNF = /^(.+)\s+(\S+)$/; 
-var NAME_PARSER_LNF = /^(\S+?),\s+(.+)$/; 
+var NAME_PARSER_FNF = /^(.+)\s+(\S+)$/;
+var NAME_PARSER_LNF = /^(\S+?),\s+(.+)$/;
 var DEFERRED_ON_CHANGE = 'deferred_on_change';
 
 // Initialize sheets
@@ -29,30 +29,25 @@ for (var property in sheets) {
     sheets[property].ref = sheet;
     
     // Add top row
-    sheets[property].topRow = sheet.getFrozenRows() + 1;
+    var topRow = sheet.getFrozenRows() + 1;
+    sheets[property].topRow = topRow;
     
     // Add column map
     var map = {};
-    var r = sheet.getFrozenRows();
-    for (var c = 1; c <= sheet.getLastColumn(); c++) {
-      var range = sheet.getRange(r, c);
-      if (! range.isBlank()) {
-        var parentValues = [];
-        for (var pr = 1; pr < r; pr++) {
-          var parentRange = sheet.getRange(pr, c);
-          var parentValue = parentRange.getValue();
-        }
-            
-        var value = range.getValue();
+    var columns = sheet.getRange(topRow - 1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    for (var c = 0; c < columns.length; c++) {
+      var cBase1 = c + 1;
+      var value = columns[c];
+      if (value) {
         if (value in map) {
           // Multiple columns with the same name--handle as array
           if (Array.isArray(map[value])) {
-            map[value].push(c);
+            map[value].push(cBase1);
           } else {
-            map[value] = [map[value], c];
+            map[value] = [map[value], cBase1];
           }
         } else {
-          map[value] = c;
+          map[value] = cBase1;
         }
       }
     }
@@ -60,6 +55,10 @@ for (var property in sheets) {
   }
 }
 Logger.log("sheets= " + JSON.stringify(sheets));
+
+function showProgressMessage(message) {
+  SpreadsheetApp.getActiveSpreadsheet().toast(message);
+}
 
 function onChange(e) {
   Logger.log("In onChange()");
@@ -93,16 +92,16 @@ function handleEvent(e) {
       Logger.log("No sheet");
       // Let's assume everything changed :(
       // TODO: Be smart about what validations to add
+      showProgressMessage("Sorting configuration worksheets");
       sortUnits_();
       sortLeaders_();
-      sortPositions_();
       sortLifecycles_();
       addValidations();
-      //updateAllCallingStatus();
       return;
     }
     
     // Fire appropriate update functions depending on the sheet
+    // TODO: Be more selective about which validations to add
     var refreshValidations = false;
     if (sheet === sheets.pendingCallings || sheet === sheets.currentCallings) {
       updateCallingStatus(sheet, e.range.getRowIndex(), e.range.getNumRows());
@@ -113,7 +112,6 @@ function handleEvent(e) {
       sortLeaders_();
       refreshValidations = true;
     } else if (sheet === sheets.positions) {
-      sortPositions_();
       refreshValidations = true;
     }
     Logger.log("Done with sheet-specific triggers");
@@ -128,24 +126,6 @@ function handleEvent(e) {
 }
 
 
-/**
- * Retrieves all the rows in the active spreadsheet that contain data and logs the
- * values for each row.
- * For more information on using the Spreadsheet API, see
- * https://developers.google.com/apps-script/service_spreadsheet
- */
-function readRows() {
-  var sheet = SpreadsheetApp.getActiveSheet();
-  var rows = sheet.getDataRange();
-  var numRows = rows.getNumRows();
-  var values = rows.getValues();
-
-  for (var i = 0; i <= numRows - 1; i++) {
-    var row = values[i];
-    Logger.log(row);
-  }
-};
-
 function onOpen() {
   var ui = SpreadsheetApp.getUi();
   ui.createMenu('Callings')
@@ -153,10 +133,22 @@ function onOpen() {
     .addItem('Organize callings', 'organizeCallings')
     .addItem('Update calling status', 'updateAllCallingStatus')
     .addItem('Print pending callings', 'printPendingCallings')
-    .addItem('Download members list', 'downloadMembers')
+    .addItem('Format member list', 'formatMembers')
     .addItem('About', 'showAbout')
     .addToUi();
 };
+
+function getMembers_() {
+  if (config['members']) {
+    return config['members'];
+  }
+  
+  // Get values
+  var list = getLookupValues_(sheets.members, "Lookup name");
+  
+  config['members'] = list;
+  return list;
+}
 
 function sortUnits_() {
   var sheet = sheets.units.ref;
@@ -169,16 +161,10 @@ function getUnits_() {
     return config['units'];
   }
   
-  var sheet = sheets.units.ref;
-  var numRows = sheet.getLastRow();
-  
-  var list = [];
-  for (var i = sheets.units.topRow; i <= numRows; i++) {
-    // Only get active ones
-    if (! sheet.getRange(i, sheets.units.columns["Visible"]).isBlank()) {
-      list.push(sheet.getRange(i, sheets.units.columns["Abbreviation"]).getValue());
-    }
-  }
+  // Get values
+  var list = getLookupValues_(sheets.units, "Abbreviation", function(value, row, sheet){
+    return row[sheet.columns["Visible"] - 1];
+  });
   
   config['units'] = list;
   return list;
@@ -195,24 +181,13 @@ function getLeaders_() {
     return config['leaders'];
   }
   
-  var sheet = sheets.leaders.ref;
-  var numRows = sheet.getLastRow();
-  
-  var list = [];
-  for (var i = sheets.leaders.topRow; i <= numRows; i++) {
-    // Only get active ones
-    if (! sheet.getRange(i, sheets.leaders.columns["Visible"]).isBlank()) {
-      list.push(sheet.getRange(i, sheets.leaders.columns["Name"]).getValue());
-    }
-  }
+  // Get values
+  var list = getLookupValues_(sheets.leaders, "Name", function(value, row, sheet){
+    return row[sheet.columns["Visible"] - 1];
+  });
   
   config['leaders'] = list;
   return list;
-}
-
-function sortPositions_() {
-  var sheet = sheets.positions.ref;
-  sheet.sort(sheets.positions.columns["Visible"]);
 }
 
 function getPositions_() {
@@ -220,16 +195,10 @@ function getPositions_() {
     return config['positions'];
   }
   
-  var sheet = sheets.positions.ref;
-  var numRows = sheet.getLastRow();
-  
-  var list = [];
-  for (var i = sheets.positions.topRow; i <= numRows; i++) {
-    // Only get active ones
-    if (! sheet.getRange(i, sheets.positions.columns["Visible"]).isBlank()) {
-      list.push(sheet.getRange(i, sheets.positions.columns["Name"]).getValue());
-    }
-  }
+  // Get values
+  var list = getLookupValues_(sheets.positions, "Name", function(value, row, sheet){
+    return row[sheet.columns["Visible"] - 1];
+  });
   
   config['positions'] = list;
   return list;
@@ -240,15 +209,18 @@ function getPositionLifecycles_() {
     return config['positionLifecycles'];
   }
   
-  var sheet = sheets.positions.ref;
-  var numRows = sheet.getLastRow();
+  // Grab copy of all data
+  var sheet = sheets.positions;
+  var allData = getAllData_(sheet);
   
+  // Determine lookup names
   var positions = {};
-  for (var i = sheets.positions.topRow; i <= numRows; i++) {
-    var nameRange = sheet.getRange(i, sheets.positions.columns["Name"]);
-    var lifecycleRange = sheet.getRange(i, sheets.positions.columns["Lifecycle"]);
-    if (! (nameRange.isBlank() || lifecycleRange.isBlank())) {
-      positions[nameRange.getValue()] = lifecycleRange.getValue();
+  for (var r = 0; r < allData.length; r++) {
+    var row = allData[r];
+    var name = row[sheet.columns["Name"] - 1];
+    var lifecycle = row[sheet.columns["Lifecycle"] - 1];
+    if (name && lifecycle) {
+      positions[name] = lifecycle;
     }
   }
   
@@ -262,18 +234,14 @@ function sortLifecycles_() {
 }
 
 function getLifecycleNames_() {
-  var sheet = sheets.lifecycles.ref;
-  var numRows = sheet.getLastRow();
-  
-  var list = [];
-  for (var i = sheets.lifecycles.topRow; i <= numRows; i++) {
-    // Only get active ones
-    var range = sheet.getRange(i, sheets.lifecycles.columns["Name"]);
-    if (! range.isBlank()) {
-      list.push(range.getValue());
-    }
+  if (config['lifecycles']) {
+    return config['lifecycles'];
   }
   
+  // Get values
+  var list = getLookupValues_(sheets.lifecycles, "Name");
+  
+  config['lifecycles'] = list;
   return list;
 }
 
@@ -282,36 +250,40 @@ function getLifecycleActions_() {
     return config['lifecycleActions'];
   }
   
-  var sheet = sheets.lifecycles.ref;
-  var numRows = sheet.getLastRow();
-  var numCols = sheet.getLastColumn();
+  // Get all data
+  var sheet = sheets.lifecycles;
+  var allData = getAllData_(sheet);
   
+  // Get/check column counts
+  var columnColumns = sheet.columns["Column"];
+  var actionColumns = sheet.columns["Action"];
+  if (columnColumns.length != actionColumns.length) {
+    throw new Error("Mismatch in number of Column and Action columns on " + sheets.lifecycles.name + " sheet");
+  }
+  
+  // Get lifecycles
   var lifecycles = {};
-  for (var r = sheets.lifecycles.topRow; r <= numRows; r++) {
+  for (var r = 0; r < allData.length; r++) {
+    var row = allData[r];
+    var name = row[sheet.columns["Name"] - 1];
+    
     // Only get active ones
-    var range = sheet.getRange(r, sheets.lifecycles.columns["Name"]);
     var actions = [];
-    if (! range.isBlank()) {
+    if (name) {
       // Add default action
       // TODO: Ensure Default action column exists
-      var c = sheets.lifecycles.columns["Default action"];
-      var action = sheet.getRange(r, c).getValue();
+      var action = row[sheet.columns["Default action"] - 1];
       actions.push({ column: null, action: action });
       
       // Add other actions
-      var columnColumns = sheets.lifecycles.columns["Column"];
-      var actionColumns = sheets.lifecycles.columns["Action"];
-      if (columnColumns.length != actionColumns.length) {
-        throw new Error("Mismatch in number of Column and Action columns on " + sheets.lifecycles.name + " sheet");
-      }
       for (var i = 0; i < columnColumns.length; i++) {
-        var column = sheet.getRange(r, columnColumns[i]).getValue();
-        var action = sheet.getRange(r, actionColumns[i]).getValue();
+        var column = row[columnColumns[i] + 1];
+        var action = row[actionColumns[i] + 1];
         if (column && action) {
           actions.push({ column: column, action: action });
         }
       }
-      lifecycles[range.getValue()] = actions;
+      lifecycles[name] = actions;
     }
   }
   
@@ -324,18 +296,9 @@ function getActionNames_() {
     return config['actionNames'];
   }
   
-  var sheet = sheets.actions.ref;
-  var numRows = sheet.getLastRow();
-  
-  var list = [];
-  for (var i = sheets.actions.topRow; i <= numRows; i++) {
-    // Only get active ones
-    var range = sheet.getRange(i, sheets.actions.columns["Name"]);
-    if (! range.isBlank()) {
-      list.push(range.getValue());
-    }
-  }
-  
+  // Get values
+  var list = getLookupValues_(sheets.actions, "Name");
+    
   config['actionNames'] = list;
   return list;
 }
@@ -345,21 +308,22 @@ function getActionSheets_() {
     return config['actionSheets'];
   }
   
-  var sheet = sheets.actions.ref;
-  var numRows = sheet.getLastRow();
+  // Grab copy of all data
+  var sheet = sheets.actions;
+  var allData = getAllData_(sheet);
   
+  // Determine lookup names
   var actions = {};
-  for (var i = sheets.actions.topRow; i <= numRows; i++) {
-    // Only get active ones
-    var nameRange = sheet.getRange(i, sheets.actions.columns["Name"]);
-    var sheetRange = sheet.getRange(i, sheets.actions.columns["Sheet"]);
-    if (! (nameRange.isBlank() || sheetRange.isBlank())) {
-      var sheetName = sheetRange.getValue();
+  for (var r = 0; r < allData.length; r++) {
+    var row = allData[r];
+    var name = row[sheet.columns["Name"] - 1];
+    var sheetName = row[sheet.columns["Sheet"] - 1];
+    if (name && sheetName) {
       // Translate sheet name into sheets object reference
       for (var property in sheets) {
         if (sheets.hasOwnProperty(property)) {
           if (sheetName == sheets[property].name) {
-            actions[nameRange.getValue()] = sheets[property];
+            actions[name] = sheets[property];
           }
         }
       }
@@ -368,6 +332,32 @@ function getActionSheets_() {
   
   config['actionSheets'] = actions;
   return actions;
+}
+
+function getAllData_(sheet) {
+  var startRow = sheet.topRow;
+  return sheet.ref.getRange(startRow, 1, sheet.ref.getLastRow() - sheet.topRow + 1, sheet.ref.getLastColumn()).getValues();
+}
+
+function getLookupValues_(sheet, columnName, validationFunction) {
+  var allData = getAllData_(sheet);
+  
+  // Get lookup values
+  var list = [];
+  for (var r = 0; r < allData.length; r++) {
+    var row = allData[r];
+    var value = row[sheet.columns[columnName] - 1];
+    // Validate
+    if (typeof validationFunction == 'function') {
+      if (validationFunction(value, row, sheet)) {
+        list.push(value);
+      }
+    } else if (value) {
+      list.push(value);
+    }   
+  }
+  
+  return list;
 }
 
 function getCallingSheetNames_() {
@@ -380,6 +370,13 @@ function getCallingSheetNames_() {
 
 function addValidations() {
   var sheet;
+  
+  showProgressMessage("Refreshing validations");
+  
+  // Add members lists to pending callings sheet
+  var membersRule = SpreadsheetApp.newDataValidation().requireValueInList(getMembers_()).setAllowInvalid(true).build();
+  sheet = sheets.pendingCallings;
+  sheet.ref.getRange(sheet.topRow, sheet.columns["Name"], sheet.ref.getMaxRows() - sheet.topRow + 1, 1).setDataValidation(membersRule);
     
   // Add units lists to pending callings sheet
   var unitsRule = SpreadsheetApp.newDataValidation().requireValueInList(getUnits_()).setAllowInvalid(true).build();
@@ -429,6 +426,8 @@ function updateAllCallingStatus() {
 }
 
 function updateCallingStatus(sheet, startRow, numRows) {
+  showProgressMessage("Updating calling status on " + sheet.name + " worksheet");
+                      
   // Skip empty sheets
   if (startRow < sheet.topRow || numRows < 1) {
     return;
@@ -589,6 +588,42 @@ function sortCallings(sheet) {
   sheet.ref.sort(sheet.columns["SID"]);
 }
 
+function formatMembers() {
+  var sheet = sheets.members;
+  
+  // Grab copy of all data
+  var startRow = sheet.topRow;
+  var allData = getAllData_(sheet);
+  
+  // Determine lookup names
+  for (var r = 0; r < allData.length; r++) {
+    var row = allData[r];
+    var fullName = row[sheet.columns["Full name"] - 1];
+    var age = row[sheet.columns["Age"] - 1];
+    var unit = row[sheet.columns["Unit"] - 1];
+    var forcedName = row[sheet.columns["Forced name"] - 1];
+    var lookupName = row[sheet.columns["Lookup name"] - 1];
+    var lookupName = forcedName || reformatNameLnfToShort(fullName);
+    var details = [];
+    if (unit) {
+      details.push(unit);
+    }
+    if (age) {
+      details.push(age);
+    }
+    if (details.length > 0) {
+      lookupName = lookupName + " (" + details.join(", ") + ")"; 
+    }
+    row[sheet.columns["Lookup name"] - 1] = lookupName;
+  }
+  
+  // Write columns back
+  var dataRows = allData.length;
+  sheet.ref.getRange(startRow, sheet.columns["Lookup name"], dataRows, 1).setValues(
+    sliceSingleColumn(allData, 0, dataRows, sheet.columns["Lookup name"] - 1)
+  );
+}
+
 function getColumnNumber(sheet, columnName) {
   for (var r = 1; r <= sheet.getFrozenRows(); r++) {
     for (var c = 1; c <= sheet.getLastColumn(); c++) {
@@ -619,6 +654,33 @@ function reformatNameFNF(name) {
   var result = NAME_PARSER_LNF.exec(name);
   if (result != null) {
     return result[2] + " " + result[1];
+  } else {
+    return name;
+  }
+}
+
+function reformatNameLnfToShort(name) {
+  var result = NAME_PARSER_LNF.exec(name);
+  if (result != null) {
+    var lastName = result[1];
+    var firstAndMiddleNames = result[2].split(/\s+/);
+    var firstName = firstAndMiddleNames.shift();
+    
+    if (firstAndMiddleNames) {
+      var middleInitials = [];
+      while (firstAndMiddleNames.length > 0) {
+        var n = firstAndMiddleNames.shift();
+        n.replace(/,$/, "");
+        // Retain some things
+        if (! n.match(/Jr\.?/)) {
+          n = n.substring(0, 1) + ".";
+        }
+        middleInitials.push(n);
+      }
+      return lastName + ", " + firstName + " " + middleInitials.join(" ");
+    } else {
+      return lastName + ", " + firstName;
+    }
   } else {
     return name;
   }
@@ -830,10 +892,6 @@ function formatDate(date) {
   } else {
     return date;
   }
-}
-
-function downloadMembers() {
-  SpreadsheetApp.getUi().alert("To be implemented...");
 }
 
 function moveRows(sourceSheet, targetSheet, startRow, numRows, targetRow) {
