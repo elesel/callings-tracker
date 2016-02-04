@@ -1,6 +1,6 @@
 // See https://github.com/elesel/callings-tracker
 "use strict";
-var VERSION = '0.7.1';
+var VERSION = '0.7.2';
 var ABOUT_URL = 'https://github.com/elesel/callings-tracker';
 
 var NAME_PARSER_FNF = /^(.+)\s+(\S+)$/;
@@ -286,6 +286,7 @@ function reloadConfiguration() {
     var cache = CacheService.getDocumentCache();
     config = {};  
     addConfigurationValidations();
+    addValidations();
     cache.put('config', JSON.stringify(config));
   } catch (error) {
     SpreadsheetApp.getUi().alert(error);
