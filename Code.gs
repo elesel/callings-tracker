@@ -1,65 +1,126 @@
 // See https://github.com/elesel/callings-tracker
-var VERSION = '0.6.1';
+"use strict";
+var VERSION = '0.7.1';
 var ABOUT_URL = 'https://github.com/elesel/callings-tracker';
 
-var NAME_PARSER_FNF = /^(.+)\s+(\S+)$/; 
-var NAME_PARSER_LNF = /^(\S+?),\s+(.+)$/; 
-var DEFERRED_ON_CHANGE = 'deferred_on_change';
+var NAME_PARSER_FNF = /^(.+)\s+(\S+)$/;
+var NAME_PARSER_LNF = /^(\S+?),\s+(.+)$/;
+var NAME_PARSER_LOOKUP = /^(.+)\s+\((.+)\)$/;
+var HEADER_EMPTY = '<empty>';
 
-// Initialize sheets
-var config = {};
-var sheets = {
-  pendingCallings: { name: "Callings - Pending" },
-  currentCallings: { name: "Callings - Current" },
-  archivedCallings: { name: "Callings - Archive" },
-  units: { name: "Units" },
-  leaders: { name: "Leaders" },
-  members: { name: "Members" },
-  positions: { name: "Positions" },
-  lifecycles: { name: "Lifecycles" },
-  actions: { name: "Actions" }
+// Define Sheet class and methods
+function Sheet(name) {
+  this.name = name;
+  this.ref = null;
+  this.topRow = null;
+  this.columns = null;
+}
+Sheet.prototype.getRef = function(){
+  if (this.ref) {
+    return this.ref;
+  }
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(this.name);
+  if (! sheet) {
+    throw "Can't find a sheet named '" + this.name + "'";
+  }
+  this.ref = sheet;
+  return this.ref;
 };
-
-// Add references to sheets
-for (var property in sheets) {
-  if (sheets.hasOwnProperty(property)) {
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheets[property].name);
-    
-    // Add object reference
-    sheets[property].ref = sheet;
-    
-    // Add top row
-    sheets[property].topRow = sheet.getFrozenRows() + 1;
-    
-    // Add column map
-    var map = {};
-    var r = sheet.getFrozenRows();
-    for (var c = 1; c <= sheet.getLastColumn(); c++) {
-      var range = sheet.getRange(r, c);
-      if (! range.isBlank()) {
-        var parentValues = [];
-        for (var pr = 1; pr < r; pr++) {
-          var parentRange = sheet.getRange(pr, c);
-          var parentValue = parentRange.getValue();
+Sheet.prototype.getTopRow = function(){
+  if (this.topRow) {
+    return this.topRow;
+  }
+  var frozenRows = this.getRef().getFrozenRows();
+  if (frozenRows == 0) {
+    throw "Header rows on sheet '" + this.name + "' aren't frozen";
+  }
+  this.topRow = frozenRows + 1;
+  return this.topRow;
+};
+Sheet.prototype.getColumns = function(){
+  if (this.columns) {
+    return this.columns;
+  }
+  
+  // Create column map
+  var map = {};
+  var headerValues = this.getRef().getRange(1, 1, this.getTopRow() - 1, this.getRef().getLastColumn()).getValues();
+  for (var c = 0; c < headerValues[0].length; c++) {
+    // Create hierarchical header value
+    var headers = [];
+    for (var r = 0; r < headerValues.length; r++) {
+      var header = headerValues[r][c];
+      if (header) {
+        if (header != HEADER_EMPTY) {
+          headers.push(header);
         }
-            
-        var value = range.getValue();
-        if (value in map) {
-          // Multiple columns with the same name--handle as array
-          if (Array.isArray(map[value])) {
-            map[value].push(c);
-          } else {
-            map[value] = [map[value], c];
+      } else {
+        // Assume it's part of a group of merged cells, look to the left until we find a value
+        for (var c2 = c; c2 >= 0; c2--) {
+          var header = headerValues[r][c2];
+          if (header) {
+            if (header != HEADER_EMPTY) {
+              headers.push(header);
+              headerValues[r][c] = header;
+            }
+            break;
           }
-        } else {
-          map[value] = c;
         }
       }
     }
-    sheets[property].columns = map;
+    var header = headers.join('/');
+    
+    // Store in map
+    var cBase1 = c + 1;
+    if (header) {
+      if (header in map) {
+        // Multiple columns with the same name--handle as array
+        if (Array.isArray(map[header])) {
+          map[header].push(cBase1);
+        } else {
+          map[header] = [map[header], cBase1];
+        }
+      } else {
+        map[header] = cBase1;
+      }
+    }
   }
+  
+  Logger.log("columns in " + this.name + ": " + JSON.stringify(map));
+  this.columns = map;
+  return this.columns;
+};
+Sheet.prototype.getColumn = function(name){
+  if (! this.columns) {
+    this.getColumns();
+  }
+  
+  if (name in this.columns) {
+    return this.columns[name];
+  } else {
+    throw "Can't find column '" + name + "' on sheet '" + this.name + "'";
+  }
+};
+
+// Initialize sheets
+var config = {};
+loadConfiguration();
+var sheets = {
+  pendingCallings: new Sheet("Callings - Pending"),
+  currentCallings: new Sheet("Callings - Current"),
+  archivedCallings: new Sheet("Callings - Archive"),
+  units: new Sheet("Units"),
+  leaders: new Sheet("Leaders"),
+  members: new Sheet("Members"),
+  positions: new Sheet("Positions"),
+  lifecycles: new Sheet("Lifecycles"),
+  actions: new Sheet("Actions")
+};
+
+function showProgressMessage(message) {
+  Logger.log("Showing message: " + message);
+  SpreadsheetApp.getActiveSpreadsheet().toast(message);
 }
-Logger.log("sheets= " + JSON.stringify(sheets));
 
 function onChange(e) {
   Logger.log("In onChange()");
@@ -80,7 +141,7 @@ function handleEvent(e) {
   if (e.range) {
     for (var property in sheets) {
       if (sheets.hasOwnProperty(property)) {
-        if (isSameSheet(e.range.getSheet(), sheets[property].ref)) {
+        if (isSameSheet(e.range.getSheet(), sheets[property].getRef())) {
           sheet = sheets[property];
           break;
         }
@@ -91,60 +152,19 @@ function handleEvent(e) {
   try {
     if (! sheet) {
       Logger.log("No sheet");
-      // Let's assume everything changed :(
-      // TODO: Be smart about what validations to add
-      sortUnits_();
-      sortLeaders_();
-      sortPositions_();
-      sortLifecycles_();
+      // Let's assume everything changed
       addValidations();
-      //updateAllCallingStatus();
       return;
-    }
-    
-    // Fire appropriate update functions depending on the sheet
-    var refreshValidations = false;
-    if (sheet === sheets.pendingCallings || sheet === sheets.currentCallings) {
-      updateCallingStatus(sheet, e.range.getRowIndex(), e.range.getNumRows());
-    } else if (sheet === sheets.units) {
-      sortUnits_();
-      refreshValidations = true;
-    } else if (sheet === sheets.leaders) {
-      sortLeaders_();
-      refreshValidations = true;
-    } else if (sheet === sheets.positions) {
-      sortPositions_();
-      refreshValidations = true;
-    }
-    Logger.log("Done with sheet-specific triggers");
-    
-    // Refresh validations if necessary
-    if (refreshValidations) {
-      addValidations();
+    } else {
+      // Fire appropriate update functions depending on the sheet
+      if (sheet === sheets.pendingCallings || sheet === sheets.currentCallings) {
+        updateCallingStatus(sheet, e.range.getRowIndex(), e.range.getNumRows());
+      } 
     }
   } catch (error) {
     SpreadsheetApp.getUi().alert(error);
   }
 }
-
-
-/**
- * Retrieves all the rows in the active spreadsheet that contain data and logs the
- * values for each row.
- * For more information on using the Spreadsheet API, see
- * https://developers.google.com/apps-script/service_spreadsheet
- */
-function readRows() {
-  var sheet = SpreadsheetApp.getActiveSheet();
-  var rows = sheet.getDataRange();
-  var numRows = rows.getNumRows();
-  var values = rows.getValues();
-
-  for (var i = 0; i <= numRows - 1; i++) {
-    var row = values[i];
-    Logger.log(row);
-  }
-};
 
 function onOpen() {
   var ui = SpreadsheetApp.getUi();
@@ -152,16 +172,155 @@ function onOpen() {
     .addItem('Sort callings', 'sortAllCallings')
     .addItem('Organize callings', 'organizeCallings')
     .addItem('Update calling status', 'updateAllCallingStatus')
-    .addItem('Print pending callings', 'printPendingCallings')
-    .addItem('Download members list', 'downloadMembers')
+    .addItem('Format member list', 'formatMembers')
+    .addSubMenu(SpreadsheetApp.getUi().createMenu('Setup')
+      .addItem('Reload configuration', 'reloadConfiguration')
+      .addItem('Show/hide configuration sheets', 'toggleConfigurationSheets')
+      .addItem('Create triggers', 'checkAndCreateTriggers')
+      .addItem('Remove triggers', 'removeTriggers'))
     .addItem('About', 'showAbout')
     .addToUi();
 };
 
+/**
+ * @OnlyCurrentDoc
+ */
+function removeTriggers() {
+  // Check current triggers
+  var triggers = ScriptApp.getProjectTriggers();
+  var onChangeTrigger = null;
+  var onEditTrigger = null;
+  var triggersRemoved = 0;
+  triggers.forEach(function(trigger){
+    if (trigger.getEventType() === ScriptApp.EventType.ON_EDIT && trigger.getHandlerFunction() === 'onEdit') {
+      ScriptApp.deleteTrigger(trigger);
+      triggersRemoved++;
+    }
+    if (trigger.getEventType() === ScriptApp.EventType.ON_CHANGE && trigger.getHandlerFunction() === 'onChange') {
+      ScriptApp.deleteTrigger(trigger);
+      triggersRemoved++;
+    }
+  });
+  
+  var ui = SpreadsheetApp.getUi();
+  ui.alert(triggersRemoved + ' trigger(s) removed.');  
+}
+
+/**
+ * @OnlyCurrentDoc
+ */
+function checkAndCreateTriggers() {
+  // Check current triggers
+  var triggers = ScriptApp.getProjectTriggers();
+  var hasOnChange = false;
+  var hasOnEdit = false;
+  triggers.forEach(function(trigger){
+    if (trigger.getEventType() === ScriptApp.EventType.ON_EDIT && trigger.getHandlerFunction() === 'onEdit') {
+      hasOnEdit = true;
+    }
+    if (trigger.getEventType() === ScriptApp.EventType.ON_CHANGE && trigger.getHandlerFunction() === 'onChange') {
+      hasOnChange = true;
+    }
+  });
+  
+  // Add triggers if necessary
+  if (! (hasOnEdit && hasOnChange)) {
+    var ui = SpreadsheetApp.getUi();
+    var response = ui.alert('Do you want to create and run triggers as yourself? Someone (but only one) needs to say yes to this question in order for the spreadsheet to function.', ui.ButtonSet.YES_NO);
+    if (response === ui.Button.YES) {
+      var spreadsheet = SpreadsheetApp.getActive();
+      var triggersCreated = 0;
+      if (! hasOnEdit) {
+        ScriptApp.newTrigger('onEdit')
+        .forSpreadsheet(spreadsheet)
+        .onEdit()
+        .create();
+        triggersCreated++;
+      }
+      if (!hasOnChange) {
+        ScriptApp.newTrigger('onChange')
+        .forSpreadsheet(spreadsheet)
+        .onChange()
+        .create();
+        triggersCreated++;
+      }
+      ui.alert(triggersCreated + ' trigger(s) created.');
+    } 
+  } else {
+    ui.alert('Nothing to do! Triggers already created.');
+  }
+}
+
+function toggleConfigurationSheets() {
+  try {
+    var configurationSheets = [
+      sheets.units,
+      sheets.leaders,
+      sheets.members,
+      sheets.positions,
+      sheets.lifecycles,
+      sheets.actions
+    ];
+    
+    var doHide = null;
+    configurationSheets.forEach(function(s){
+      var sRef = s.getRef();
+      
+      if (doHide == null) {
+        doHide = ! sRef.isSheetHidden();
+      }
+      
+      if (doHide) {
+        sRef.hideSheet();
+      } else {
+        sRef.showSheet();
+      }
+    });
+  } catch (error) {
+    SpreadsheetApp.getUi().alert(error);
+  }
+}
+
+function reloadConfiguration() {
+  try {
+    var cache = CacheService.getDocumentCache();
+    config = {};  
+    addConfigurationValidations();
+    cache.put('config', JSON.stringify(config));
+  } catch (error) {
+    SpreadsheetApp.getUi().alert(error);
+  }
+}
+
+function loadConfiguration() {
+  try {
+    var cache = CacheService.getDocumentCache();
+    var tempConfig = cache.get('config');
+    if (tempConfig != null) {
+      config = JSON.parse(tempConfig);
+    }
+  } catch (error) {
+    SpreadsheetApp.getUi().alert(error);
+    config = {};
+  }
+}
+
+function getMembers_() {
+  if (config['members']) {
+    return config['members'];
+  }
+  
+  // Get values
+  var list = getLookupValues_(sheets.members, "Lookup name");
+  
+  config['members'] = list;
+  return list;
+}
+
 function sortUnits_() {
-  var sheet = sheets.units.ref;
-  sheet.sort(sheets.units.columns["Abbreviation"]);
-  sheet.sort(sheets.units.columns["Visible"]);
+  var sheet = sheets.units.getRef();
+  sheet.sort(sheets.units.getColumn("Abbreviation"));
+  sheet.sort(sheets.units.getColumn("Visible"));
 }
 
 function getUnits_() {
@@ -169,25 +328,19 @@ function getUnits_() {
     return config['units'];
   }
   
-  var sheet = sheets.units.ref;
-  var numRows = sheet.getLastRow();
-  
-  var list = [];
-  for (var i = sheets.units.topRow; i <= numRows; i++) {
-    // Only get active ones
-    if (! sheet.getRange(i, sheets.units.columns["Visible"]).isBlank()) {
-      list.push(sheet.getRange(i, sheets.units.columns["Abbreviation"]).getValue());
-    }
-  }
+  // Get values
+  var list = getLookupValues_(sheets.units, "Abbreviation", function(value, row, sheet){
+    return row[sheet.getColumn("Visible") - 1];
+  });
   
   config['units'] = list;
   return list;
 }
 
 function sortLeaders_() {
-  var sheet = sheets.leaders.ref;
-  sheet.sort(sheets.leaders.columns["Name"]);
-  sheet.sort(sheets.leaders.columns["Visible"]);
+  var sheet = sheets.leaders.getRef();
+  sheet.sort(sheets.leaders.getColumn("Name"));
+  sheet.sort(sheets.leaders.getColumn("Visible"));
 }
 
 function getLeaders_() {
@@ -195,24 +348,13 @@ function getLeaders_() {
     return config['leaders'];
   }
   
-  var sheet = sheets.leaders.ref;
-  var numRows = sheet.getLastRow();
-  
-  var list = [];
-  for (var i = sheets.leaders.topRow; i <= numRows; i++) {
-    // Only get active ones
-    if (! sheet.getRange(i, sheets.leaders.columns["Visible"]).isBlank()) {
-      list.push(sheet.getRange(i, sheets.leaders.columns["Name"]).getValue());
-    }
-  }
+  // Get values
+  var list = getLookupValues_(sheets.leaders, "Name", function(value, row, sheet){
+    return row[sheet.getColumn("Visible") - 1];
+  });
   
   config['leaders'] = list;
   return list;
-}
-
-function sortPositions_() {
-  var sheet = sheets.positions.ref;
-  sheet.sort(sheets.positions.columns["Visible"]);
 }
 
 function getPositions_() {
@@ -220,16 +362,10 @@ function getPositions_() {
     return config['positions'];
   }
   
-  var sheet = sheets.positions.ref;
-  var numRows = sheet.getLastRow();
-  
-  var list = [];
-  for (var i = sheets.positions.topRow; i <= numRows; i++) {
-    // Only get active ones
-    if (! sheet.getRange(i, sheets.positions.columns["Visible"]).isBlank()) {
-      list.push(sheet.getRange(i, sheets.positions.columns["Name"]).getValue());
-    }
-  }
+  // Get values
+  var list = getLookupValues_(sheets.positions, "Name", function(value, row, sheet){
+    return row[sheet.getColumn("Visible") - 1];
+  });
   
   config['positions'] = list;
   return list;
@@ -240,15 +376,18 @@ function getPositionLifecycles_() {
     return config['positionLifecycles'];
   }
   
-  var sheet = sheets.positions.ref;
-  var numRows = sheet.getLastRow();
+  // Grab copy of all data
+  var sheet = sheets.positions;
+  var allData = getAllData_(sheet);
   
+  // Determine lookup names
   var positions = {};
-  for (var i = sheets.positions.topRow; i <= numRows; i++) {
-    var nameRange = sheet.getRange(i, sheets.positions.columns["Name"]);
-    var lifecycleRange = sheet.getRange(i, sheets.positions.columns["Lifecycle"]);
-    if (! (nameRange.isBlank() || lifecycleRange.isBlank())) {
-      positions[nameRange.getValue()] = lifecycleRange.getValue();
+  for (var r = 0; r < allData.length; r++) {
+    var row = allData[r];
+    var name = row[sheet.getColumn("Name") - 1];
+    var lifecycle = row[sheet.getColumn("Lifecycle") - 1];
+    if (name && lifecycle) {
+      positions[name] = lifecycle;
     }
   }
   
@@ -257,23 +396,19 @@ function getPositionLifecycles_() {
 }
 
 function sortLifecycles_() {
-  var sheet = sheets.lifecycles.ref;
-  sheet.sort(sheets.lifecycles.columns["Name"]);
+  var sheet = sheets.lifecycles.getRef();
+  sheet.sort(sheets.lifecycles.getColumn("Name"));
 }
 
 function getLifecycleNames_() {
-  var sheet = sheets.lifecycles.ref;
-  var numRows = sheet.getLastRow();
-  
-  var list = [];
-  for (var i = sheets.lifecycles.topRow; i <= numRows; i++) {
-    // Only get active ones
-    var range = sheet.getRange(i, sheets.lifecycles.columns["Name"]);
-    if (! range.isBlank()) {
-      list.push(range.getValue());
-    }
+  if (config['lifecycles']) {
+    return config['lifecycles'];
   }
   
+  // Get values
+  var list = getLookupValues_(sheets.lifecycles, "Name");
+  
+  config['lifecycles'] = list;
   return list;
 }
 
@@ -282,36 +417,40 @@ function getLifecycleActions_() {
     return config['lifecycleActions'];
   }
   
-  var sheet = sheets.lifecycles.ref;
-  var numRows = sheet.getLastRow();
-  var numCols = sheet.getLastColumn();
+  // Get all data
+  var sheet = sheets.lifecycles;
+  var allData = getAllData_(sheet);
   
+  // Get/check column counts
+  var columnColumns = sheet.getColumn("Column");
+  var actionColumns = sheet.getColumn("Action");
+  if (columnColumns.length != actionColumns.length) {
+    throw "Mismatch in number of Column and Action columns on " + sheets.lifecycles.name + " sheet";
+  }
+  
+  // Get lifecycles
   var lifecycles = {};
-  for (var r = sheets.lifecycles.topRow; r <= numRows; r++) {
+  for (var r = 0; r < allData.length; r++) {
+    var row = allData[r];
+    var name = row[sheet.getColumn("Name") - 1];
+    
     // Only get active ones
-    var range = sheet.getRange(r, sheets.lifecycles.columns["Name"]);
     var actions = [];
-    if (! range.isBlank()) {
+    if (name) {
       // Add default action
       // TODO: Ensure Default action column exists
-      var c = sheets.lifecycles.columns["Default action"];
-      var action = sheet.getRange(r, c).getValue();
+      var action = row[sheet.getColumn("Default action") - 1];
       actions.push({ column: null, action: action });
       
       // Add other actions
-      var columnColumns = sheets.lifecycles.columns["Column"];
-      var actionColumns = sheets.lifecycles.columns["Action"];
-      if (columnColumns.length != actionColumns.length) {
-        throw new Error("Mismatch in number of Column and Action columns on " + sheets.lifecycles.name + " sheet");
-      }
       for (var i = 0; i < columnColumns.length; i++) {
-        var column = sheet.getRange(r, columnColumns[i]).getValue();
-        var action = sheet.getRange(r, actionColumns[i]).getValue();
+        var column = row[columnColumns[i] + 1];
+        var action = row[actionColumns[i] + 1];
         if (column && action) {
           actions.push({ column: column, action: action });
         }
       }
-      lifecycles[range.getValue()] = actions;
+      lifecycles[name] = actions;
     }
   }
   
@@ -324,18 +463,9 @@ function getActionNames_() {
     return config['actionNames'];
   }
   
-  var sheet = sheets.actions.ref;
-  var numRows = sheet.getLastRow();
-  
-  var list = [];
-  for (var i = sheets.actions.topRow; i <= numRows; i++) {
-    // Only get active ones
-    var range = sheet.getRange(i, sheets.actions.columns["Name"]);
-    if (! range.isBlank()) {
-      list.push(range.getValue());
-    }
-  }
-  
+  // Get values
+  var list = getLookupValues_(sheets.actions, "Name");
+    
   config['actionNames'] = list;
   return list;
 }
@@ -345,21 +475,22 @@ function getActionSheets_() {
     return config['actionSheets'];
   }
   
-  var sheet = sheets.actions.ref;
-  var numRows = sheet.getLastRow();
+  // Grab copy of all data
+  var sheet = sheets.actions;
+  var allData = getAllData_(sheet);
   
+  // Determine lookup names
   var actions = {};
-  for (var i = sheets.actions.topRow; i <= numRows; i++) {
-    // Only get active ones
-    var nameRange = sheet.getRange(i, sheets.actions.columns["Name"]);
-    var sheetRange = sheet.getRange(i, sheets.actions.columns["Sheet"]);
-    if (! (nameRange.isBlank() || sheetRange.isBlank())) {
-      var sheetName = sheetRange.getValue();
+  for (var r = 0; r < allData.length; r++) {
+    var row = allData[r];
+    var name = row[sheet.getColumn("Name") - 1];
+    var sheetName = row[sheet.getColumn("Sheet") - 1];
+    if (name && sheetName) {
       // Translate sheet name into sheets object reference
       for (var property in sheets) {
         if (sheets.hasOwnProperty(property)) {
           if (sheetName == sheets[property].name) {
-            actions[nameRange.getValue()] = sheets[property];
+            actions[name] = sheets[property];
           }
         }
       }
@@ -370,6 +501,37 @@ function getActionSheets_() {
   return actions;
 }
 
+function getAllData_(sheet) {
+  var startRow = sheet.getTopRow();
+  return sheet.getRef().getRange(startRow, 1, sheet.getRef().getLastRow() - startRow + 1, sheet.getRef().getLastColumn()).getValues();
+}
+
+function getAllCells_(sheet) {
+  var startRow = sheet.getTopRow();
+  return sheet.getRef().getRange(startRow, 1, sheet.getRef().getMaxRows() - startRow + 1, sheet.getRef().getMaxColumns()).getValues();
+}
+
+function getLookupValues_(sheet, columnName, validationFunction) {
+  var allData = getAllData_(sheet);
+  
+  // Get lookup values
+  var list = [];
+  for (var r = 0; r < allData.length; r++) {
+    var row = allData[r];
+    var value = row[sheet.getColumn(columnName) - 1];
+    // Validate
+    if (typeof validationFunction == 'function') {
+      if (validationFunction(value, row, sheet)) {
+        list.push(value);
+      }
+    } else if (value) {
+      list.push(value);
+    }   
+  }
+  
+  return list;
+}
+
 function getCallingSheetNames_() {
   var list = [];
   list.push(sheets.pendingCallings.name);
@@ -378,59 +540,72 @@ function getCallingSheetNames_() {
   return list;
 }
 
-function addValidations() {
+function addConfigurationValidations() {
   var sheet;
-    
-  // Add units lists to pending callings sheet
-  var unitsRule = SpreadsheetApp.newDataValidation().requireValueInList(getUnits_()).setAllowInvalid(true).build();
-  sheet = sheets.pendingCallings;
-  sheet.ref.getRange(sheet.topRow, sheet.columns["Unit"], sheet.ref.getMaxRows() - sheet.topRow + 1, 1).setDataValidation(unitsRule);
-    
-  // Add positions lists to pending callings sheet
-  var positionsRule = SpreadsheetApp.newDataValidation().requireValueInList(getPositions_()).setAllowInvalid(true).build();
-  sheet = sheets.pendingCallings;
-  sheet.ref.getRange(sheet.topRow, sheet.columns["Position"], sheet.ref.getMaxRows() - sheet.topRow + 1, 1).setDataValidation(positionsRule);
   
-  // Add leaders lists to pending callings sheet
-  var leadersRule = SpreadsheetApp.newDataValidation().requireValueInList(getLeaders_()).setAllowInvalid(true).build();
-  sheet = sheets.pendingCallings;
-  sheet.ref.getRange(sheet.topRow, sheet.columns["Set apart by"], sheet.ref.getMaxRows() - sheet.topRow + 1, 1).setDataValidation(leadersRule);
+  // Sort sheets first
+  sortUnits_();
+  sortLeaders_();
+  sortLifecycles_();
   
   // Add lifecycles list to positions sheet
   var lifecyclesRule = SpreadsheetApp.newDataValidation().requireValueInList(getLifecycleNames_()).setAllowInvalid(true).build();
   sheet = sheets.positions;
-  sheet.ref.getRange(sheet.topRow, sheet.columns["Lifecycle"], sheet.ref.getMaxRows() - sheet.topRow + 1, 1).setDataValidation(lifecyclesRule);
+  sheet.getRef().getRange(sheet.getTopRow(), sheet.getColumn("Lifecycle"), sheet.getRef().getMaxRows() - sheet.getTopRow() + 1, 1).setDataValidation(lifecyclesRule);
   
   // Add positions columns lists to lifecycle sheet
-  var positionsColumnsRule = SpreadsheetApp.newDataValidation().requireValueInList(Object.keys(sheets.pendingCallings.columns)).setAllowInvalid(true).build();
+  var positionsColumnsRule = SpreadsheetApp.newDataValidation().requireValueInList(Object.keys(sheets.pendingCallings.getColumns())).setAllowInvalid(true).build();
   sheet = sheets.lifecycles;
-  sheet.columns['Column'].forEach(function(c){
-    sheet.ref.getRange(sheet.topRow, c, sheet.ref.getMaxRows() - sheet.topRow + 1, 1).setDataValidation(positionsColumnsRule);
+  sheet.getColumn('Column').forEach(function(c){
+    sheet.getRef().getRange(sheet.getTopRow(), c, sheet.getRef().getMaxRows() - sheet.getTopRow() + 1, 1).setDataValidation(positionsColumnsRule);
   });
   
   // Add action names lists to lifecycle sheet
   var actionsRule = SpreadsheetApp.newDataValidation().requireValueInList(getActionNames_()).setAllowInvalid(true).build();
   sheet = sheets.lifecycles;
-  sheet.columns['Action'].forEach(function(c){
-    sheet.ref.getRange(sheet.topRow, c, sheet.ref.getMaxRows() - sheet.topRow + 1, 1).setDataValidation(actionsRule);
+  sheet.getRef().getRange(sheet.getTopRow(), sheet.getColumn("Default action"), sheet.getRef().getMaxRows() - sheet.getTopRow() + 1, 1).setDataValidation(actionsRule);
+  sheet.getColumn('Action').forEach(function(c){
+    sheet.getRef().getRange(sheet.getTopRow(), c, sheet.getRef().getMaxRows() - sheet.getTopRow() + 1, 1).setDataValidation(actionsRule);
   });
   
   // Add sheet name lists to actions sheet
   var callingSheetsRule = SpreadsheetApp.newDataValidation().requireValueInList(getCallingSheetNames_()).setAllowInvalid(true).build();
   sheet = sheets.actions;
-  sheet.ref.getRange(sheet.topRow, sheet.columns["Sheet"], sheet.ref.getMaxRows() - sheet.topRow + 1, 1).setDataValidation(callingSheetsRule);
+  sheet.getRef().getRange(sheet.getTopRow(), sheet.getColumn("Sheet"), sheet.getRef().getMaxRows() - sheet.getTopRow() + 1, 1).setDataValidation(callingSheetsRule);
+}
+
+function addValidations() {
+  var sheet;
+   
+  // Update member names and add validations
+  updatePendingMembers();
+    
+  // Add units lists to pending callings sheet
+  var unitsRule = SpreadsheetApp.newDataValidation().requireValueInList(getUnits_()).setAllowInvalid(true).build();
+  sheet = sheets.pendingCallings;
+  sheet.getRef().getRange(sheet.getTopRow(), sheet.getColumn("Member/Unit"), sheet.getRef().getMaxRows() - sheet.getTopRow() + 1, 1).setDataValidation(unitsRule);
+    
+  // Add positions lists to pending callings sheet
+  var positionsRule = SpreadsheetApp.newDataValidation().requireValueInList(getPositions_()).setAllowInvalid(true).build();
+  sheet = sheets.pendingCallings;
+  sheet.getRef().getRange(sheet.getTopRow(), sheet.getColumn("Position"), sheet.getRef().getMaxRows() - sheet.getTopRow() + 1, 1).setDataValidation(positionsRule);
+  
+  // Add leaders lists to pending callings sheet
+  var leadersRule = SpreadsheetApp.newDataValidation().requireValueInList(getLeaders_()).setAllowInvalid(true).build();
+  sheet = sheets.pendingCallings;
+  sheet.getRef().getRange(sheet.getTopRow(), sheet.getColumn("Extend/Set apart by"), sheet.getRef().getMaxRows() - sheet.getTopRow() + 1, 1).setDataValidation(leadersRule);  
 }
 
 function updateAllCallingStatus() {
   // Update calling status
   [sheets.pendingCallings, sheets.currentCallings].forEach(function(sheet){
-    updateCallingStatus(sheet, sheet.topRow, sheet.ref.getLastRow() - sheet.topRow + 1);
+    updateCallingStatus(sheet, sheet.getTopRow(), sheet.getRef().getLastRow() - sheet.getTopRow() + 1);
   });
 }
 
-function updateCallingStatus(sheet, startRow, numRows) {
+function updateCallingStatus(sheet, startRow, numRows) {                      
   // Skip empty sheets
-  if (startRow < sheet.topRow || numRows < 1) {
+  if (startRow < sheet.getTopRow() || numRows < 1) {
     return;
   }
   
@@ -441,63 +616,71 @@ function updateCallingStatus(sheet, startRow, numRows) {
   var actionNames = getActionNames_();
   
   // Grab copy of all data
-  var allData = sheet.ref.getRange(startRow, 1, numRows, sheet.ref.getLastColumn()).getValues();
+  var allData = sheet.getRef().getRange(startRow, 1, numRows, sheet.getRef().getLastColumn()).getValues();
   for (var r = 0; r < allData.length; r++) {
     var row = allData[r];
-    var positionName = row[sheet.columns["Position"] - 1];
+    var positionName = row[sheet.getColumn("Position") - 1];
+    var status = row[sheet.getColumn("Status") - 1];
+    var newStatus = status;
+    var sid = row[sheet.getColumn("SID") - 1];
+    var newSid = sid;
+    var pid = row[sheet.getColumn("PID") - 1];
+    var newPid = pid;
     if (positionName) {
+      // Find current action
       var lifecycle = lifecycleActions[positionLifecycles[positionName]];
-      var action = 'Unknown';
+      var newStatus = 'Unknown';
       if (lifecycle) {
         lifecycle.some(function(columnAction){
           if (! columnAction.column) {
-            action = columnAction.action;
-          } else if (row[sheet.columns[columnAction.column] - 1]) {
-            action = columnAction.action;
+            newStatus = columnAction.action;
+          } else if (row[sheet.getColumn(columnAction.column) - 1]) {
+            newStatus = columnAction.action;
           } else {
             return true;
           }
         });
       }
       
-      // Change values only if we have to
-      var status = row[sheet.columns["Status"] - 1];
-      var sid = row[sheet.columns["SID"] - 1];
-      var pid = row[sheet.columns["PID"] - 1];
-      var actionIndex = actionNames.indexOf(action);
-      var positionIndex = positionNames.indexOf(positionName);
-      if (status !== action) {
-        row[sheet.columns["Status"] - 1] = action;
-      }
-      if (sid !== actionIndex) {
-        row[sheet.columns["SID"] - 1] = actionIndex;
-      }
-      if (pid !== positionIndex) {
-        row[sheet.columns["PID"] - 1] = positionIndex;
-      }
+      // Look up indexes
+      var newSid = actionNames.indexOf(newStatus);
+      var newPid = positionNames.indexOf(positionName);
     } else {
-      row[sheet.columns["Status"] - 1] = '';
+      newStatus = '';
+      newSid = '';
+      newPid = '';
+    }
+    
+    // Change values only if we have to
+    if (status !== newStatus) {
+      row[sheet.getColumn("Status") - 1] = newStatus;
+    }
+    if (sid !== newSid) {
+      row[sheet.getColumn("SID") - 1] = newSid;
+    }
+    if (pid !== newPid) {
+      row[sheet.getColumn("PID") - 1] = newPid;
     }
   }
   
   // Write columns back
   var dataRows = allData.length;
-  sheet.ref.getRange(startRow, sheet.columns["Status"], dataRows, 1).setValues(
-    sliceSingleColumn(allData, 0, dataRows, sheet.columns["Status"] - 1)
+  sheet.getRef().getRange(startRow, sheet.getColumn("Status"), dataRows, 1).setValues(
+    sliceSingleColumn(allData, 0, dataRows, sheet.getColumn("Status") - 1)
   );
-  sheet.ref.getRange(startRow, sheet.columns["SID"], dataRows, 1).setValues(
-    sliceSingleColumn(allData, 0, dataRows, sheet.columns["SID"] - 1)
+  sheet.getRef().getRange(startRow, sheet.getColumn("SID"), dataRows, 1).setValues(
+    sliceSingleColumn(allData, 0, dataRows, sheet.getColumn("SID") - 1)
   );
-  sheet.ref.getRange(startRow, sheet.columns["PID"], dataRows, 1).setValues(
-    sliceSingleColumn(allData, 0, dataRows, sheet.columns["PID"] - 1)
+  sheet.getRef().getRange(startRow, sheet.getColumn("PID"), dataRows, 1).setValues(
+    sliceSingleColumn(allData, 0, dataRows, sheet.getColumn("PID") - 1)
   );
 }
 
 function organizeCallings() {
   try {
     // Sanity check the sheets
-    if (sheets.pendingCallings.ref.getMaxColumns() != sheets.currentCallings.ref.getMaxColumns() || sheets.pendingCallings.ref.getMaxColumns() != sheets.archivedCallings.ref.getMaxColumns()) {
-      throw new Error("Mismatch in number of columns among the callings sheets. They must be the same.");
+    if (sheets.pendingCallings.getRef().getMaxColumns() != sheets.currentCallings.getRef().getMaxColumns() || sheets.pendingCallings.getRef().getMaxColumns() != sheets.archivedCallings.getRef().getMaxColumns()) {
+      throw "Mismatch in number of columns among the callings sheets. They must be the same.";
     }
     
     // Get action to sheet mapping
@@ -507,17 +690,17 @@ function organizeCallings() {
     var changedSheets = [];
     [sheets.pendingCallings, sheets.currentCallings].forEach(function(sheet){
       // Only continue if there's data
-      var numRows = sheet.ref.getLastRow() - sheet.topRow + 1;
+      var numRows = sheet.getRef().getLastRow() - sheet.getTopRow() + 1;
       if (numRows < 1) {
         return;
       }
       
       // Sort callings so that we can move contiguous rows
-      updateCallingStatus(sheet, sheet.topRow, sheet.ref.getLastRow() - sheet.topRow + 1);
+      updateCallingStatus(sheet, sheet.getTopRow(), sheet.getRef().getLastRow() - sheet.getTopRow() + 1);
       sortCallings(sheet);
       
       // Iterate through all status values
-      var allData = sheet.ref.getRange(sheet.topRow, sheet.columns["Status"], numRows, 1).getValues();
+      var allData = sheet.getRef().getRange(sheet.getTopRow(), sheet.getColumn("Status"), numRows, 1).getValues();
       var startRow = null;
       var targetSheet = null;
       var rowsMoved = 0;
@@ -540,12 +723,12 @@ function organizeCallings() {
             if (targetSheet != null && targetSheet != sheet) {
               // Send rows to another sheet
               var endRow = (step == 'previous' ? r - 1 : r);
-              var realStartRow = startRow + sheet.topRow - rowsMoved;
-              var realEndRow = endRow + sheet.topRow - rowsMoved;
+              var realStartRow = startRow + sheet.getTopRow() - rowsMoved;
+              var realEndRow = endRow + sheet.getTopRow() - rowsMoved;
               
               // Move
               Logger.log("Move row " + realStartRow + " through row " + realEndRow + " from sheet " + sheet.name + " to sheet " + targetSheet.name);
-              var targetRange = moveRows(sheet, targetSheet, realStartRow, realEndRow - realStartRow + 1, targetSheet.topRow);
+              var targetRange = moveRows(sheet, targetSheet, realStartRow, realEndRow - realStartRow + 1, targetSheet.getTopRow());
               if (targetRange != sheets.PendingCallings) {
                 targetRange.clearDataValidations();
               }
@@ -583,10 +766,123 @@ function sortAllCallings() {
 }
 
 function sortCallings(sheet) {
-  sheet.ref.sort(sheet.columns["Name"]);
-  sheet.ref.sort(sheet.columns["Sustain"]);
-  sheet.ref.sort(sheet.columns["PID"]);
-  sheet.ref.sort(sheet.columns["SID"]);
+  sheet.getRef().sort(sheet.getColumn("Member/Name"));
+  sheet.getRef().sort(sheet.getColumn("Extend/Sustain"));
+  sheet.getRef().sort(sheet.getColumn("PID"));
+  sheet.getRef().sort(sheet.getColumn("SID"));
+}
+
+function formatMembers() {
+  var sheet = sheets.members;
+  
+  // Grab copy of all data
+  var startRow = sheet.getTopRow();
+  var allData = getAllData_(sheet);
+  
+  // Determine lookup names
+  for (var r = 0; r < allData.length; r++) {
+    var row = allData[r];
+    var fullName = row[sheet.getColumn("Full name") - 1];
+    var age = row[sheet.getColumn("Age") - 1];
+    var unit = row[sheet.getColumn("Unit") - 1];
+    var forcedName = row[sheet.getColumn("Forced name") - 1];
+    var lookupName = row[sheet.getColumn("Lookup name") - 1];
+    var lookupName = forcedName || reformatNameLnfToShort(fullName);
+    var details = [];
+    if (age) {
+      details.push(age);
+    }
+    if (unit) {
+      details.push(unit);
+    }
+    if (details.length > 0) {
+      lookupName = lookupName + " (" + details.join(", ") + ")"; 
+    }
+    row[sheet.getColumn("Lookup name") - 1] = lookupName;
+  }
+  
+  // Write columns back
+  var dataRows = allData.length;
+  sheet.getRef().getRange(startRow, sheet.getColumn("Lookup name"), dataRows, 1).setValues(
+    sliceSingleColumn(allData, 0, dataRows, sheet.getColumn("Lookup name") - 1)
+  );
+  
+  // Update pending callings
+  updatePendingMembers();
+}
+
+function updatePendingMembers() {
+  var sheet = sheets.pendingCallings;
+  
+  // Grab copy of all data
+  var startRow = sheet.getTopRow();
+  var allData = getAllCells_(sheet);
+  
+  // Build members validation rule
+  var membersRule = SpreadsheetApp.newDataValidation().requireValueInList(getMembers_()).setAllowInvalid(true).build();
+  
+  // Clear validations from member name column
+  sheet.getRef().getRange(startRow, sheet.getColumn("Member/Name"), sheet.getRef().getMaxRows() - startRow + 1, 1).clearDataValidations();
+  
+  // Process rows
+  var nameChanged = false;
+  var unitChanged = false;
+  var rangeStartRow = null;
+  var rangeStopRow = null;
+  for (var r = 0; r < allData.length; r++) {
+    var row = allData[r];
+    var name = row[sheet.getColumn("Member/Name") - 1];
+    var result = NAME_PARSER_LOOKUP.exec(name);
+    if (result != null) {
+      // Reduce member name cell to just member name
+      var unit = row[sheet.getColumn("Member/Unit") - 1];
+      row[sheet.getColumn("Member/Name") - 1] = result[1];
+      nameChanged = true;
+      if (! unit) {
+        // Add unit only if not already defined
+        var ageAndUnit = result[2].split(/\s*,\s*/);
+        var unit = null;
+        if (ageAndUnit.length > 1) {
+          unit = ageAndUnit[1];
+        } else {
+          unit = ageAndUnit[0];
+        }
+        // TODO: Validate unit better
+        if (unit) {
+          row[sheet.getColumn("Member/Unit") - 1] = unit;
+          unitChanged = true;
+        }
+      }
+    }
+    
+    // Update validation pointers
+    if (! name) {
+      if (rangeStartRow == null) {
+        rangeStartRow = r;
+      }
+      rangeStopRow = r;
+    }
+    
+    // Add validation
+    if (rangeStopRow && (r > rangeStopRow || r == allData.length - 1)) {
+      sheet.getRef().getRange(startRow + rangeStartRow, sheet.getColumn("Member/Name"), rangeStopRow - rangeStartRow + 1, 1).setDataValidation(membersRule);
+      rangeStartRow = null;
+      rangeStopRow = null;
+    }
+  }
+  
+  // Write columns back
+  var dataRows = allData.length;
+  if (nameChanged) {
+    sheet.getRef().getRange(startRow, sheet.getColumn("Member/Name"), dataRows, 1).setValues(
+      sliceSingleColumn(allData, 0, dataRows, sheet.getColumn("Member/Name") - 1)
+    );
+  }
+  if (unitChanged) {
+    sheet.getRef().getRange(startRow, sheet.getColumn("Member/Unit"), dataRows, 1).setValues(
+      sliceSingleColumn(allData, 0, dataRows, sheet.getColumn("Member/Unit") - 1)
+    );
+  }
 }
 
 function getColumnNumber(sheet, columnName) {
@@ -624,6 +920,33 @@ function reformatNameFNF(name) {
   }
 }
 
+function reformatNameLnfToShort(name) {
+  var result = NAME_PARSER_LNF.exec(name);
+  if (result != null) {
+    var lastName = result[1];
+    var firstAndMiddleNames = result[2].split(/\s+/);
+    var firstName = firstAndMiddleNames.shift();
+    
+    if (firstAndMiddleNames) {
+      var middleInitials = [];
+      while (firstAndMiddleNames.length > 0) {
+        var n = firstAndMiddleNames.shift();
+        n.replace(/,$/, "");
+        // Retain some things
+        if (! n.match(/Jr\.?/)) {
+          n = n.substring(0, 1) + ".";
+        }
+        middleInitials.push(n);
+      }
+      return lastName + ", " + firstName + " " + middleInitials.join(" ");
+    } else {
+      return lastName + ", " + firstName;
+    }
+  } else {
+    return name;
+  }
+}
+
 function onlyUnique(value, index, self) { 
     return self.indexOf(value) === index;
 }
@@ -641,213 +964,27 @@ function sliceSingleColumn(grid, startRow, numRows, columnNumber) {
   return results;
 }
 
-function printPendingCallings() {
-  // Get/create "temporary" document to use for the printout
-  // TODO: Add support to reuse existing document
-  //var doc = DocumentApp.openById('DOCUMENT_ID_GOES_HERE');
-  // Create new one
-  var documentName = SpreadsheetApp.getActiveSpreadsheet().getName() + "-Printable";
-  var doc = DocumentApp.create(documentName);
-  var body = doc.getBody();
-  
-  // Set page margins
-  var margin = 36;
-  doc.getBody()
-    .setMarginTop(margin)
-    .setMarginBottom(margin)
-    .setMarginLeft(margin)
-    .setMarginRight(margin);
-  
-  // Create header and footer
-  var header = doc.addHeader();
-  header.appendParagraph('Pending Callings - Confidential');
-  header.appendParagraph('Printed at ' + formatDate(Date()));
-  header.appendHorizontalRule();
-  var footer = doc.addFooter();
-  footer.appendHorizontalRule();
-  footer.appendParagraph('Confidential');
-  
-  // Create styles
-  var sectionHeaderStyle = {};
-  sectionHeaderStyle[DocumentApp.Attribute.FONT_FAMILY] = 'Calibri';
-  sectionHeaderStyle[DocumentApp.Attribute.FONT_SIZE] = 18;
-  sectionHeaderStyle[DocumentApp.Attribute.BOLD] = true;
-  
-  // Create section for write-ins
-  body.appendParagraph('Nominations').setAttributes(sectionHeaderStyle);
-  var table = body.appendTable([
-    ['Position', 'Name', 'Unit', 'BP', 'TR', 'SP', 'HC'],
-    ['______________________________', '____________________________', '_____', '☐', '☐', '    /    /    ', '    /    /    '],
-    ['______________________________', '____________________________', '_____', '☐', '☐', '    /    /    ', '    /    /    '],
-    ['______________________________', '____________________________', '_____', '☐', '☐', '    /    /    ', '    /    /    '],
-    ['______________________________', '____________________________', '_____', '☐', '☐', '    /    /    ', '    /    /    ']
-  ]);
-  setTableStyle(table);
-  table.setColumnWidth(0, inchesToPoints(2.125));
-  table.setColumnWidth(1, inchesToPoints(2));
-  table.setColumnWidth(2, inchesToPoints(.375));
-  table.setColumnWidth(3, inchesToPoints(.25));
-  table.setColumnWidth(4, inchesToPoints(.25));
-  table.setColumnWidth(5, inchesToPoints(.675));
-  table.setColumnWidth(6, inchesToPoints(.675));
-  centerTableColumn(table, 3);
-  centerTableColumn(table, 4);
-  centerTableColumn(table, 5);
-  centerTableColumn(table, 6);
-  
-  // Sort pending sheet
-  var sheet = sheets.pendingCallings;
-  sortCallings(sheets.pendingCallings);
-  
-  // Get data and iterate through it
-  var lastAction = null;
-  var table = null;
-  var allData = sheet.ref.getRange(sheet.topRow, 1, sheet.ref.getLastRow() - sheet.topRow + 1, sheet.ref.getLastColumn()).getValues();
-  for (var r = 0; r < allData.length; r++) {
-    var row = allData[r];
-    var action = row[sheet.columns["Status"] - 1];
-    if (action != lastAction) {
-      // Start new table
-      body.appendParagraph(action).setAttributes(sectionHeaderStyle);
-      table = body.appendTable([
-        ['Position', 'Name', 'Unit', 'BP', 'TR', 'SP', 'HC', 'Interview', 'Sustain', 'Set Apart']
-      ]);
-      setTableStyle(table);
-      table.setColumnWidth(0, inchesToPoints(1.75));
-      table.setColumnWidth(1, inchesToPoints(1.375));
-      table.setColumnWidth(2, inchesToPoints(.375));
-      table.setColumnWidth(3, inchesToPoints(.25));
-      table.setColumnWidth(4, inchesToPoints(.25));
-      table.setColumnWidth(5, inchesToPoints(.675));
-      table.setColumnWidth(6, inchesToPoints(.675));
-      table.setColumnWidth(7, inchesToPoints(.675));
-      table.setColumnWidth(8, inchesToPoints(.675));
-      table.setColumnWidth(9, inchesToPoints(.675));
-      centerTableColumn(table, 3);
-      centerTableColumn(table, 4);
-      centerTableColumn(table, 5);
-      centerTableColumn(table, 6);
-      centerTableColumn(table, 7);
-      centerTableColumn(table, 8);
-      centerTableColumn(table, 9);
-    }
-    // Add row to the table
-    var tableRow = table.appendTableRow();
-    var position = row[sheet.columns["Position"] - 1] || '________________________';
-    var name = row[sheet.columns["Name"] - 1] || '___________________';
-    var unit = row[sheet.columns["Unit"] - 1] || '_____';
-    var bishop = (row[sheet.columns["Bishop"] - 1] ? '☒' : '☐');
-    var templeRecommend = row[sheet.columns["TR"] - 1] || '☐';
-    var stakePresidency = formatDate(row[sheet.columns["Stake presidency"] - 1]) || '    /    /    ';
-    var highCouncil = formatDate(row[sheet.columns["High council"] - 1]) || '    /    /    ';
-    var interview = formatDate(row[sheet.columns["Interview"] - 1]) || '    /    /    ';
-    var sustain = formatDate(row[sheet.columns["Sustain"] - 1]) || '    /    /    ';
-    var setApart = formatDate(row[sheet.columns["Set Apart"] - 1]) || '    /    /    ';
-    tableRow.appendTableCell(position);
-    tableRow.appendTableCell(name);
-    tableRow.appendTableCell(unit);
-    tableRow.appendTableCell(bishop);
-    tableRow.appendTableCell(templeRecommend);
-    tableRow.appendTableCell(stakePresidency);
-    tableRow.appendTableCell(highCouncil);
-    tableRow.appendTableCell(interview);
-    tableRow.appendTableCell(sustain);
-    tableRow.appendTableCell(setApart);
-    setTableRowStyle(tableRow);
-    centerTableRowColumn(tableRow, 3);
-    centerTableRowColumn(tableRow, 4);
-    centerTableRowColumn(tableRow, 5);
-    centerTableRowColumn(tableRow, 6);
-    centerTableRowColumn(tableRow, 7);
-    centerTableRowColumn(tableRow, 8);
-    centerTableRowColumn(tableRow, 9);
-    
-    lastAction = action;
-  }
-  
-  // Send to user
-  doc.saveAndClose();
-  var pdfUrl = 'https://docs.google.com/document/d/' + doc.getId() + '/export?format=pdf';
-  SpreadsheetApp.getUi().alert('Printable version is located at ' + pdfUrl);
-  
-  // Delete
-  DriveApp.getFileById(doc.getId()).setTrashed(true);
-}
-
-function setTableStyle(table) {
-  var gridHeaderStyle = {};
-  gridHeaderStyle[DocumentApp.Attribute.FONT_FAMILY] = 'Calibri';
-  gridHeaderStyle[DocumentApp.Attribute.FONT_SIZE] = 10;
-  gridHeaderStyle[DocumentApp.Attribute.BOLD] = true;
-  
-  table.setBorderWidth(0);
-
-  for (var r = 0; r < table.getNumRows(); r++) {
-    var row = table.getRow(r);
-    setTableRowStyle(row);
-    if (r == 0) {
-      table.getRow(0).editAsText().setAttributes(gridHeaderStyle);
-    }
-  }
-}
-
-function setTableRowStyle(row) {
-  var gridNormalStyle = {};
-  gridNormalStyle[DocumentApp.Attribute.FONT_FAMILY] = 'Calibri';
-  gridNormalStyle[DocumentApp.Attribute.FONT_SIZE] = 10;
-  gridNormalStyle[DocumentApp.Attribute.BOLD] = false;
-  
-  row.editAsText().setAttributes(gridNormalStyle);
-  row.setMinimumHeight(inchesToPoints(.25));
-  for (var c = 0; c < row.getNumCells(); c++) {
-    var cell = row.getCell(c);
-    cell.setPaddingLeft(0);
-    cell.setPaddingRight(0);
-    cell.setPaddingTop(0);
-    cell.setPaddingBottom(0);
-  }
-}
-
-function centerTableColumn(table, columnNumber) {
-  for (var r = 0; r < table.getNumRows(); r++) {
-    var row = table.getRow(r);
-    centerTableRowColumn(row, columnNumber);
-  }
-}
-
-function centerTableRowColumn(row, columnNumber) {
-  var cell = row.getCell(columnNumber);
-  cell.getChild(0).setAlignment(DocumentApp.HorizontalAlignment.CENTER);
-}
-  
-function inchesToPoints(inches) {
-  return inches * 72;
-}
-
-function formatDate(date) {
-  if (date instanceof Date) {
-    return (date.getMonth() + 1).toString() + '/' + date.getDate().toString() + '/' + date.getFullYear().toString().substr(2, 2);
-  } else {
-    return date;
-  }
-}
-
-function downloadMembers() {
-  SpreadsheetApp.getUi().alert("To be implemented...");
-}
-
 function moveRows(sourceSheet, targetSheet, startRow, numRows, targetRow) {
-  var numColumns = sourceSheet.ref.getMaxColumns();
-  var sourceRange = sourceSheet.ref.getRange(startRow, 1, numRows, numColumns);
+  var numColumns = sourceSheet.getRef().getMaxColumns();
+  var sourceRange = sourceSheet.getRef().getRange(startRow, 1, numRows, numColumns);
   
-  targetSheet.ref.insertRows(targetSheet.topRow, numRows);
-  var targetRange = targetSheet.ref.getRange(targetSheet.topRow, 1, numRows, numColumns);
+  targetSheet.getRef().insertRows(targetSheet.getTopRow(), numRows);
+  var targetRange = targetSheet.getRef().getRange(targetSheet.getTopRow(), 1, numRows, numColumns);
   sourceRange.moveTo(targetRange);
-  sourceSheet.ref.deleteRows(startRow, numRows);
+  sourceSheet.getRef().deleteRows(startRow, numRows);
   
   return targetRange;
 }
 
+function isMerged(cell) {
+  var source_background = cell.getBackground();
+  cell.setBackground('#fffffe');
+  var merged = (cell.getBackground() == '#ffffff');
+  cell.setBackground(source_background);
+
+  return merged;
+}
+
 function showAbout() {
-  SpreadsheetApp.getUi().alert('callings-tracker v' + VERSION + '\n' + ABOUT_URL);
+  SpreadsheetApp.getUi().alert('Callings Tracker v' + VERSION + '\n' + ABOUT_URL);
 }
