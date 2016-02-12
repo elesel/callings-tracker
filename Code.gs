@@ -1,6 +1,6 @@
 // See https://github.com/elesel/callings-tracker
 "use strict";
-var VERSION = '0.7.2';
+var VERSION = '0.7.3';
 var ABOUT_URL = 'https://github.com/elesel/callings-tracker';
 
 var NAME_PARSER_FNF = /^(.+)\s+(\S+)$/;
@@ -15,6 +15,14 @@ function Sheet(name) {
   this.topRow = null;
   this.columns = null;
 }
+Sheet.prototype.exists = function(){
+  try {
+    this.getRef();
+    return true;
+  } catch (error) {
+    return false;
+  }
+};
 Sheet.prototype.getRef = function(){
   if (this.ref) {
     return this.ref;
@@ -89,6 +97,9 @@ Sheet.prototype.getColumns = function(){
   Logger.log("columns in " + this.name + ": " + JSON.stringify(map));
   this.columns = map;
   return this.columns;
+};
+Sheet.prototype.hasColumn = function(name){
+  return name in this.getColumns;
 };
 Sheet.prototype.getColumn = function(name){
   if (! this.columns) {
@@ -263,17 +274,19 @@ function toggleConfigurationSheets() {
     ];
     
     var doHide = null;
-    configurationSheets.forEach(function(s){
-      var sRef = s.getRef();
-      
-      if (doHide == null) {
-        doHide = ! sRef.isSheetHidden();
-      }
-      
-      if (doHide) {
-        sRef.hideSheet();
-      } else {
-        sRef.showSheet();
+    configurationSheets.forEach(function(sheet){
+      if (sheet.exists()) {
+        var sheetRef = sheet.getRef();
+        
+        if (doHide == null) {
+          doHide = ! sheetRef.isSheetHidden();
+        }
+        
+        if (doHide) {
+          sheetRef.hideSheet();
+        } else {
+          sheetRef.showSheet();
+        }
       }
     });
   } catch (error) {
@@ -439,14 +452,13 @@ function getLifecycleActions_() {
     var actions = [];
     if (name) {
       // Add default action
-      // TODO: Ensure Default action column exists
       var action = row[sheet.getColumn("Default action") - 1];
       actions.push({ column: null, action: action });
       
       // Add other actions
       for (var i = 0; i < columnColumns.length; i++) {
-        var column = row[columnColumns[i] + 1];
-        var action = row[actionColumns[i] + 1];
+        var column = row[columnColumns[i] - 1];
+        var action = row[actionColumns[i] - 1];
         if (column && action) {
           actions.push({ column: column, action: action });
         }
@@ -545,8 +557,12 @@ function addConfigurationValidations() {
   var sheet;
   
   // Sort sheets first
-  sortUnits_();
-  sortLeaders_();
+  if (sheets.units.exists()) {
+    sortUnits_();
+  }
+  if (sheets.leaders.exists()) {
+    sortLeaders_();
+  }
   sortLifecycles_();
   
   // Add lifecycles list to positions sheet
@@ -582,9 +598,11 @@ function addValidations() {
   updatePendingMembers();
     
   // Add units lists to pending callings sheet
-  var unitsRule = SpreadsheetApp.newDataValidation().requireValueInList(getUnits_()).setAllowInvalid(true).build();
-  sheet = sheets.pendingCallings;
-  sheet.getRef().getRange(sheet.getTopRow(), sheet.getColumn("Member/Unit"), sheet.getRef().getMaxRows() - sheet.getTopRow() + 1, 1).setDataValidation(unitsRule);
+  if (sheets.units.exists()) {
+    var unitsRule = SpreadsheetApp.newDataValidation().requireValueInList(getUnits_()).setAllowInvalid(true).build();
+    sheet = sheets.pendingCallings;
+    sheet.getRef().getRange(sheet.getTopRow(), sheet.getColumn("Member/Unit"), sheet.getRef().getMaxRows() - sheet.getTopRow() + 1, 1).setDataValidation(unitsRule);
+  }
     
   // Add positions lists to pending callings sheet
   var positionsRule = SpreadsheetApp.newDataValidation().requireValueInList(getPositions_()).setAllowInvalid(true).build();
@@ -592,9 +610,11 @@ function addValidations() {
   sheet.getRef().getRange(sheet.getTopRow(), sheet.getColumn("Position"), sheet.getRef().getMaxRows() - sheet.getTopRow() + 1, 1).setDataValidation(positionsRule);
   
   // Add leaders lists to pending callings sheet
-  var leadersRule = SpreadsheetApp.newDataValidation().requireValueInList(getLeaders_()).setAllowInvalid(true).build();
-  sheet = sheets.pendingCallings;
-  sheet.getRef().getRange(sheet.getTopRow(), sheet.getColumn("Extend/Set apart by"), sheet.getRef().getMaxRows() - sheet.getTopRow() + 1, 1).setDataValidation(leadersRule);  
+  if (sheets.leaders.exists()) {
+    var leadersRule = SpreadsheetApp.newDataValidation().requireValueInList(getLeaders_()).setAllowInvalid(true).build();
+    sheet = sheets.pendingCallings;
+    sheet.getRef().getRange(sheet.getTopRow(), sheet.getColumn("Extend/Set apart by"), sheet.getRef().getMaxRows() - sheet.getTopRow() + 1, 1).setDataValidation(leadersRule);  
+  }
 }
 
 function updateAllCallingStatus() {
@@ -635,10 +655,13 @@ function updateCallingStatus(sheet, startRow, numRows) {
         lifecycle.some(function(columnAction){
           if (! columnAction.column) {
             newStatus = columnAction.action;
-          } else if (row[sheet.getColumn(columnAction.column) - 1]) {
-            newStatus = columnAction.action;
           } else {
-            return true;
+            var value = row[sheet.getColumn(columnAction.column) - 1];
+            if (value && value[0] != '>') {
+              newStatus = columnAction.action;
+            } else {
+              return true;
+            }
           }
         });
       }
@@ -785,7 +808,7 @@ function formatMembers() {
     var row = allData[r];
     var fullName = row[sheet.getColumn("Full name") - 1];
     var age = row[sheet.getColumn("Age") - 1];
-    var unit = row[sheet.getColumn("Unit") - 1];
+    var unit = sheet.hasColumn("Unit") ? row[sheet.getColumn("Unit") - 1] : null;
     var forcedName = row[sheet.getColumn("Forced name") - 1];
     var lookupName = row[sheet.getColumn("Lookup name") - 1];
     var lookupName = forcedName || reformatNameLnfToShort(fullName);
@@ -836,22 +859,24 @@ function updatePendingMembers() {
     var result = NAME_PARSER_LOOKUP.exec(name);
     if (result != null) {
       // Reduce member name cell to just member name
-      var unit = row[sheet.getColumn("Member/Unit") - 1];
       row[sheet.getColumn("Member/Name") - 1] = result[1];
       nameChanged = true;
-      if (! unit) {
-        // Add unit only if not already defined
-        var ageAndUnit = result[2].split(/\s*,\s*/);
-        var unit = null;
-        if (ageAndUnit.length > 1) {
-          unit = ageAndUnit[1];
-        } else {
-          unit = ageAndUnit[0];
-        }
-        // TODO: Validate unit better
-        if (unit) {
-          row[sheet.getColumn("Member/Unit") - 1] = unit;
-          unitChanged = true;
+      if (sheet.hasColumn("Member/Unit")) {
+        var unit = row[sheet.getColumn("Member/Unit") - 1];
+        if (! unit) {
+          // Add unit only if not already defined
+          var ageAndUnit = result[2].split(/\s*,\s*/);
+          var unit = null;
+          if (ageAndUnit.length > 1) {
+            unit = ageAndUnit[1];
+          } else {
+            unit = ageAndUnit[0];
+          }
+          // TODO: Validate unit better
+          if (unit) {
+            row[sheet.getColumn("Member/Unit") - 1] = unit;
+            unitChanged = true;
+          }
         }
       }
     }
@@ -865,7 +890,7 @@ function updatePendingMembers() {
     }
     
     // Add validation
-    if (rangeStopRow && (r > rangeStopRow || r == allData.length - 1)) {
+    if (rangeStopRow != null && (r > rangeStopRow || r == allData.length - 1)) {
       sheet.getRef().getRange(startRow + rangeStartRow, sheet.getColumn("Member/Name"), rangeStopRow - rangeStartRow + 1, 1).setDataValidation(membersRule);
       rangeStartRow = null;
       rangeStopRow = null;
