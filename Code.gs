@@ -1,6 +1,6 @@
 // See https://github.com/elesel/callings-tracker
 "use strict";
-var VERSION = '0.7.3';
+var VERSION = '0.7.4';
 var ABOUT_URL = 'https://github.com/elesel/callings-tracker';
 
 var NAME_PARSER_FNF = /^(.+)\s+(\S+)$/;
@@ -235,8 +235,8 @@ function checkAndCreateTriggers() {
   });
   
   // Add triggers if necessary
+  var ui = SpreadsheetApp.getUi();
   if (! (hasOnEdit && hasOnChange)) {
-    var ui = SpreadsheetApp.getUi();
     var response = ui.alert('Do you want to create and run triggers as yourself? Someone (but only one) needs to say yes to this question in order for the spreadsheet to function.', ui.ButtonSet.YES_NO);
     if (response === ui.Button.YES) {
       var spreadsheet = SpreadsheetApp.getActive();
