@@ -1,6 +1,6 @@
 // See https://github.com/elesel/callings-tracker
 "use strict";
-var VERSION = '0.7.4';
+var VERSION = '0.7.5';
 var ABOUT_URL = 'https://github.com/elesel/callings-tracker';
 
 var NAME_PARSER_FNF = /^(.+)\s+(\S+)$/;
@@ -831,8 +831,8 @@ function formatMembers() {
     sliceSingleColumn(allData, 0, dataRows, sheet.getColumn("Lookup name") - 1)
   );
   
-  // Update pending callings
-  updatePendingMembers();
+  // Refresh configuration
+  reloadConfiguration();
 }
 
 function updatePendingMembers() {
