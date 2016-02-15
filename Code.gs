@@ -1,6 +1,6 @@
 // See https://github.com/elesel/callings-tracker
 "use strict";
-var VERSION = '0.7.5';
+var VERSION = '0.7.6';
 var ABOUT_URL = 'https://github.com/elesel/callings-tracker';
 
 var NAME_PARSER_FNF = /^(.+)\s+(\S+)$/;
@@ -34,6 +34,9 @@ Sheet.prototype.getRef = function(){
   this.ref = sheet;
   return this.ref;
 };
+Sheet.prototype.getName = function(){
+  return this.name;
+}
 Sheet.prototype.getTopRow = function(){
   if (this.topRow) {
     return this.topRow;
@@ -99,7 +102,7 @@ Sheet.prototype.getColumns = function(){
   return this.columns;
 };
 Sheet.prototype.hasColumn = function(name){
-  return name in this.getColumns;
+  return name in this.getColumns();
 };
 Sheet.prototype.getColumn = function(name){
   if (! this.columns) {
@@ -149,10 +152,12 @@ function handleEvent(e) {
   
   // Look up sheet
   var sheet = null;
-  if (e.range) {
+  var eventSheet = e.range ? e.range.getSheet() : SpreadsheetApp.getActiveSheet();
+  if (eventSheet) {
+    var eventSheetName = eventSheet.getName();
     for (var property in sheets) {
       if (sheets.hasOwnProperty(property)) {
-        if (isSameSheet(e.range.getSheet(), sheets[property].getRef())) {
+        if (eventSheetName == sheets[property].getName()) {
           sheet = sheets[property];
           break;
         }
@@ -167,9 +172,19 @@ function handleEvent(e) {
       addValidations();
       return;
     } else {
+      Logger.log('Sheet is ' + sheet.getName());
+      
       // Fire appropriate update functions depending on the sheet
-      if (sheet === sheets.pendingCallings || sheet === sheets.currentCallings) {
-        updateCallingStatus(sheet, e.range.getRowIndex(), e.range.getNumRows());
+      if ((sheet === sheets.pendingCallings || sheet === sheets.currentCallings) && e.changeType !== 'REMOVE_ROW') {
+        if (e.range) {
+          var startRow = e.range.getRowIndex();
+          var numRows = e.range.getNumRows();
+          updateCallingStatus(sheet, startRow, numRows);
+          updatePendingMembers(startRow, numRows);
+        } else {
+          updateCallingStatus(sheet);
+          updatePendingMembers();
+        }
       } 
     }
   } catch (error) {
@@ -297,10 +312,14 @@ function toggleConfigurationSheets() {
 function reloadConfiguration() {
   try {
     var cache = CacheService.getDocumentCache();
-    config = {};  
+    config = {};
     addConfigurationValidations();
     addValidations();
+    getLifecycleActions_();
+    getPositionLifecycles_();
+    getActionSheets_();
     cache.put('config', JSON.stringify(config));
+    Logger.log('Stored in cache: ' + Object.getOwnPropertyNames(config).sort());
   } catch (error) {
     SpreadsheetApp.getUi().alert(error);
   }
@@ -312,6 +331,7 @@ function loadConfiguration() {
     var tempConfig = cache.get('config');
     if (tempConfig != null) {
       config = JSON.parse(tempConfig);
+      Logger.log('Loaded from cache: ' + Object.getOwnPropertyNames(config).sort());
     }
   } catch (error) {
     SpreadsheetApp.getUi().alert(error);
@@ -439,7 +459,7 @@ function getLifecycleActions_() {
   var columnColumns = sheet.getColumn("Column");
   var actionColumns = sheet.getColumn("Action");
   if (columnColumns.length != actionColumns.length) {
-    throw "Mismatch in number of Column and Action columns on " + sheets.lifecycles.name + " sheet";
+    throw "Mismatch in number of Column and Action columns on " + sheets.lifecycles.getName() + " sheet";
   }
   
   // Get lifecycles
@@ -502,7 +522,7 @@ function getActionSheets_() {
       // Translate sheet name into sheets object reference
       for (var property in sheets) {
         if (sheets.hasOwnProperty(property)) {
-          if (sheetName == sheets[property].name) {
+          if (sheetName == sheets[property].getName()) {
             actions[name] = sheets[property];
           }
         }
@@ -547,9 +567,9 @@ function getLookupValues_(sheet, columnName, validationFunction) {
 
 function getCallingSheetNames_() {
   var list = [];
-  list.push(sheets.pendingCallings.name);
-  list.push(sheets.currentCallings.name);
-  list.push(sheets.archivedCallings.name);
+  list.push(sheets.pendingCallings.getName());
+  list.push(sheets.currentCallings.getName());
+  list.push(sheets.archivedCallings.getName());
   return list;
 }
 
@@ -620,11 +640,17 @@ function addValidations() {
 function updateAllCallingStatus() {
   // Update calling status
   [sheets.pendingCallings, sheets.currentCallings].forEach(function(sheet){
-    updateCallingStatus(sheet, sheet.getTopRow(), sheet.getRef().getLastRow() - sheet.getTopRow() + 1);
+    updateCallingStatus(sheet);
   });
 }
 
-function updateCallingStatus(sheet, startRow, numRows) {                      
+function updateCallingStatus(sheet, startRow, numRows) {
+  // Set defaults for startRow and numRows
+  if (arguments.length == 1) {
+    startRow = sheet.getTopRow();
+    numRows = sheet.getRef().getLastRow() - sheet.getTopRow() + 1;
+  }
+  
   // Skip empty sheets
   if (startRow < sheet.getTopRow() || numRows < 1) {
     return;
@@ -640,6 +666,7 @@ function updateCallingStatus(sheet, startRow, numRows) {
   var allData = sheet.getRef().getRange(startRow, 1, numRows, sheet.getRef().getLastColumn()).getValues();
   for (var r = 0; r < allData.length; r++) {
     var row = allData[r];
+    var memberName = row[sheet.getColumn("Member/Name") - 1];
     var positionName = row[sheet.getColumn("Position") - 1];
     var status = row[sheet.getColumn("Status") - 1];
     var newStatus = status;
@@ -669,6 +696,10 @@ function updateCallingStatus(sheet, startRow, numRows) {
       // Look up indexes
       var newSid = actionNames.indexOf(newStatus);
       var newPid = positionNames.indexOf(positionName);
+    } else if (memberName) {
+      newStatus = 'Nominate';
+      newSid = -1;
+      newPid = '';
     } else {
       newStatus = '';
       newSid = '';
@@ -720,7 +751,7 @@ function organizeCallings() {
       }
       
       // Sort callings so that we can move contiguous rows
-      updateCallingStatus(sheet, sheet.getTopRow(), sheet.getRef().getLastRow() - sheet.getTopRow() + 1);
+      updateCallingStatus(sheet);
       sortCallings(sheet);
       
       // Iterate through all status values
@@ -744,14 +775,14 @@ function organizeCallings() {
         // Handle changes in targetSheet
         ['previous', 'current'].forEach(function(step){
           if ((step == 'previous' && callingsSheet != targetSheet) || (step == 'current' && r == allData.length - 1)) {
-            if (targetSheet != null && targetSheet != sheet) {
+            if (targetSheet != null && targetSheet.getName() != sheet.getName()) {
               // Send rows to another sheet
               var endRow = (step == 'previous' ? r - 1 : r);
               var realStartRow = startRow + sheet.getTopRow() - rowsMoved;
               var realEndRow = endRow + sheet.getTopRow() - rowsMoved;
               
               // Move
-              Logger.log("Move row " + realStartRow + " through row " + realEndRow + " from sheet " + sheet.name + " to sheet " + targetSheet.name);
+              Logger.log("Move row " + realStartRow + " through row " + realEndRow + " from sheet " + sheet.getName() + " to sheet " + targetSheet.getName());
               var targetRange = moveRows(sheet, targetSheet, realStartRow, realEndRow - realStartRow + 1, targetSheet.getTopRow());
               if (targetRange != sheets.PendingCallings) {
                 targetRange.clearDataValidations();
@@ -806,11 +837,10 @@ function formatMembers() {
   // Determine lookup names
   for (var r = 0; r < allData.length; r++) {
     var row = allData[r];
-    var fullName = row[sheet.getColumn("Full name") - 1];
+    var fullName = row[sheet.getColumn("Full name") - 1].trim();
     var age = row[sheet.getColumn("Age") - 1];
     var unit = sheet.hasColumn("Unit") ? row[sheet.getColumn("Unit") - 1] : null;
     var forcedName = row[sheet.getColumn("Forced name") - 1];
-    var lookupName = row[sheet.getColumn("Lookup name") - 1];
     var lookupName = forcedName || reformatNameLnfToShort(fullName);
     var details = [];
     if (age) {
@@ -835,18 +865,28 @@ function formatMembers() {
   reloadConfiguration();
 }
 
-function updatePendingMembers() {
+function updatePendingMembers(startRow, numRows) {
   var sheet = sheets.pendingCallings;
   
+  // Set defaults for startRow and numRows
+  if (arguments.length == 0) {
+    startRow = sheet.getTopRow();
+    numRows = sheet.getRef().getMaxRows() - startRow + 1;
+  }
+  
+  // Skip empty sheets
+  if (startRow < sheet.getTopRow() || numRows < 1) {
+    return;
+  }
+  
   // Grab copy of all data
-  var startRow = sheet.getTopRow();
-  var allData = getAllCells_(sheet);
+  var allData = sheet.getRef().getRange(startRow, 1, numRows, sheet.getRef().getMaxColumns()).getValues();
   
   // Build members validation rule
   var membersRule = SpreadsheetApp.newDataValidation().requireValueInList(getMembers_()).setAllowInvalid(true).build();
   
   // Clear validations from member name column
-  sheet.getRef().getRange(startRow, sheet.getColumn("Member/Name"), sheet.getRef().getMaxRows() - startRow + 1, 1).clearDataValidations();
+  sheet.getRef().getRange(startRow, sheet.getColumn("Member/Name"), numRows, 1).clearDataValidations();
   
   // Process rows
   var nameChanged = false;
