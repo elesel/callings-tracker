@@ -1,12 +1,14 @@
 // See https://github.com/elesel/callings-tracker
 "use strict";
-var VERSION = '0.7.6';
+var VERSION = '0.7.7';
 var ABOUT_URL = 'https://github.com/elesel/callings-tracker';
 
 var NAME_PARSER_FNF = /^(.+)\s+(\S+)$/;
 var NAME_PARSER_LNF = /^(\S+?),\s+(.+)$/;
 var NAME_PARSER_LOOKUP = /^(.+)\s+\((.+)\)$/;
 var HEADER_EMPTY = '<empty>';
+var LOCK_WAIT = 30000;
+var SIDEBAR_TITLE = 'Lookup Helper';
 
 // Define Sheet class and methods
 function Sheet(name) {
@@ -165,7 +167,7 @@ function handleEvent(e) {
     }
   }
   
-  try {
+  try {  
     if (! sheet) {
       Logger.log("No sheet");
       // Let's assume everything changed
@@ -195,6 +197,7 @@ function handleEvent(e) {
 function onOpen() {
   var ui = SpreadsheetApp.getUi();
   ui.createMenu('Callings')
+    //.addItem('Show lookup helper', 'showSidebar')
     .addItem('Sort callings', 'sortAllCallings')
     .addItem('Organize callings', 'organizeCallings')
     .addItem('Update calling status', 'updateAllCallingStatus')
@@ -275,6 +278,20 @@ function checkAndCreateTriggers() {
   } else {
     ui.alert('Nothing to do! Triggers already created.');
   }
+}
+
+function showSidebar() {
+  var ui = HtmlService.createTemplateFromFile('Sidebar')
+    .evaluate()
+    .setSandboxMode(HtmlService.SandboxMode.IFRAME)
+    .setTitle(SIDEBAR_TITLE);
+  SpreadsheetApp.getUi().showSidebar(ui);
+}
+
+function getLookupForCurrentCell() {
+  var sheet = SpreadsheetApp.getActiveSheet();
+  var colNum = sheet.getActiveCell().getColumn();
+  return colNum;
 }
 
 function toggleConfigurationSheets() {
@@ -644,12 +661,10 @@ function updateAllCallingStatus() {
   });
 }
 
-function updateCallingStatus(sheet, startRow, numRows) {
+function updateCallingStatus(sheet, startRow, numRows, parentLock) {
   // Set defaults for startRow and numRows
-  if (arguments.length == 1) {
-    startRow = sheet.getTopRow();
-    numRows = sheet.getRef().getLastRow() - sheet.getTopRow() + 1;
-  }
+  startRow = startRow || sheet.getTopRow();
+  numRows = numRows || sheet.getRef().getLastRow() - sheet.getTopRow() + 1;
   
   // Skip empty sheets
   if (startRow < sheet.getTopRow() || numRows < 1) {
@@ -661,6 +676,10 @@ function updateCallingStatus(sheet, startRow, numRows) {
   var positionLifecycles = getPositionLifecycles_();
   var positionNames = getPositions_();
   var actionNames = getActionNames_();
+  
+  // Get a lock to prevent parallel execution
+  var lock = parentLock || LockService.getDocumentLock();
+  lock.waitLock(LOCK_WAIT);
   
   // Grab copy of all data
   var allData = sheet.getRef().getRange(startRow, 1, numRows, sheet.getRef().getLastColumn()).getValues();
@@ -729,6 +748,12 @@ function updateCallingStatus(sheet, startRow, numRows) {
   sheet.getRef().getRange(startRow, sheet.getColumn("PID"), dataRows, 1).setValues(
     sliceSingleColumn(allData, 0, dataRows, sheet.getColumn("PID") - 1)
   );
+  
+  // Flush spreadsheet changes and release the lock if it wasn't inherited
+  SpreadsheetApp.flush();
+  if (! parentLock) {
+    lock.releaseLock();
+  }
 }
 
 function organizeCallings() {
@@ -741,6 +766,10 @@ function organizeCallings() {
     // Get action to sheet mapping
     var actionSheets = getActionSheets_();
     
+    // Get a lock to prevent parallel execution
+    var lock = LockService.getDocumentLock();
+    lock.waitLock(LOCK_WAIT);
+    
     // Loop through calling sheets
     var changedSheets = [];
     [sheets.pendingCallings, sheets.currentCallings].forEach(function(sheet){
@@ -751,7 +780,7 @@ function organizeCallings() {
       }
       
       // Sort callings so that we can move contiguous rows
-      updateCallingStatus(sheet);
+      updateCallingStatus(sheet, sheet.getTopRow(), sheet.getRef().getLastRow() - sheet.getTopRow() + 1, lock);
       sortCallings(sheet);
       
       // Iterate through all status values
@@ -805,6 +834,10 @@ function organizeCallings() {
       sortCallings(sheet);
     });
     
+    // Flush spreadsheet changes and release the lock
+    SpreadsheetApp.flush();
+    lock.releaseLock();
+    
     // Add validations to pending sheet if changed
     if (sheets.pendingCallings in changedSheets) {
       addValidations();
@@ -830,60 +863,74 @@ function sortCallings(sheet) {
 function formatMembers() {
   var sheet = sheets.members;
   
-  // Grab copy of all data
-  var startRow = sheet.getTopRow();
-  var allData = getAllData_(sheet);
+  var lock = LockService.getDocumentLock();
+  try {
+    // Get a lock to prevent parallel execution
+    lock.waitLock(LOCK_WAIT);
   
-  // Determine lookup names
-  for (var r = 0; r < allData.length; r++) {
-    var row = allData[r];
-    var fullName = row[sheet.getColumn("Full name") - 1].trim();
-    var age = row[sheet.getColumn("Age") - 1];
-    var unit = sheet.hasColumn("Unit") ? row[sheet.getColumn("Unit") - 1] : null;
-    var forcedName = row[sheet.getColumn("Forced name") - 1];
-    var lookupName = forcedName || reformatNameLnfToShort(fullName);
-    var details = [];
-    if (age) {
-      details.push(age);
+    // Grab copy of all data
+    var startRow = sheet.getTopRow();
+    var allData = getAllData_(sheet);
+    
+    // Determine lookup names
+    for (var r = 0; r < allData.length; r++) {
+      var row = allData[r];
+      var fullName = row[sheet.getColumn("Full name") - 1].trim();
+      var age = row[sheet.getColumn("Age") - 1];
+      var unit = sheet.hasColumn("Unit") ? row[sheet.getColumn("Unit") - 1] : null;
+      var forcedName = row[sheet.getColumn("Forced name") - 1];
+      var lookupName = forcedName || reformatNameLnfToShort(fullName);
+      var details = [];
+      if (age) {
+        details.push(age);
+      }
+      if (unit) {
+        details.push(unit);
+      }
+      if (details.length > 0) {
+        lookupName = lookupName + " (" + details.join(", ") + ")"; 
+      }
+      row[sheet.getColumn("Lookup name") - 1] = lookupName;
     }
-    if (unit) {
-      details.push(unit);
-    }
-    if (details.length > 0) {
-      lookupName = lookupName + " (" + details.join(", ") + ")"; 
-    }
-    row[sheet.getColumn("Lookup name") - 1] = lookupName;
+    
+    // Write columns back
+    var dataRows = allData.length;
+    sheet.getRef().getRange(startRow, sheet.getColumn("Lookup name"), dataRows, 1).setValues(
+      sliceSingleColumn(allData, 0, dataRows, sheet.getColumn("Lookup name") - 1)
+    );
+  } catch (error) {
+    SpreadsheetApp.getUi().alert(error);
   }
   
-  // Write columns back
-  var dataRows = allData.length;
-  sheet.getRef().getRange(startRow, sheet.getColumn("Lookup name"), dataRows, 1).setValues(
-    sliceSingleColumn(allData, 0, dataRows, sheet.getColumn("Lookup name") - 1)
-  );
+  // Flush spreadsheet changes and release the lock
+  SpreadsheetApp.flush();
+  lock.releaseLock();
   
   // Refresh configuration
   reloadConfiguration();
 }
 
-function updatePendingMembers(startRow, numRows) {
+function updatePendingMembers(startRow, numRows, parentLock) {
   var sheet = sheets.pendingCallings;
-  
   // Set defaults for startRow and numRows
-  if (arguments.length == 0) {
-    startRow = sheet.getTopRow();
-    numRows = sheet.getRef().getMaxRows() - startRow + 1;
-  }
+  startRow = startRow || sheet.getTopRow();
+  numRows = numRows || sheet.getRef().getMaxRows() - startRow + 1;
   
   // Skip empty sheets
   if (startRow < sheet.getTopRow() || numRows < 1) {
     return;
   }
   
+  // Get a lock to prevent parallel execution
+  var lock = parentLock || LockService.getDocumentLock();
+  lock.waitLock(LOCK_WAIT);
+  
   // Grab copy of all data
   var allData = sheet.getRef().getRange(startRow, 1, numRows, sheet.getRef().getMaxColumns()).getValues();
   
   // Build members validation rule
-  var membersRule = SpreadsheetApp.newDataValidation().requireValueInList(getMembers_()).setAllowInvalid(true).build();
+  // FIXME: This can't handle more than 500 items now; gotta figure out a fix
+  //var membersRule = SpreadsheetApp.newDataValidation().requireValueInList(getMembers_()).setAllowInvalid(true).build();
   
   // Clear validations from member name column
   sheet.getRef().getRange(startRow, sheet.getColumn("Member/Name"), numRows, 1).clearDataValidations();
@@ -931,7 +978,8 @@ function updatePendingMembers(startRow, numRows) {
     
     // Add validation
     if (rangeStopRow != null && (r > rangeStopRow || r == allData.length - 1)) {
-      sheet.getRef().getRange(startRow + rangeStartRow, sheet.getColumn("Member/Name"), rangeStopRow - rangeStartRow + 1, 1).setDataValidation(membersRule);
+      // FIXME: Can't set this validation now
+      //sheet.getRef().getRange(startRow + rangeStartRow, sheet.getColumn("Member/Name"), rangeStopRow - rangeStartRow + 1, 1).setDataValidation(membersRule);
       rangeStartRow = null;
       rangeStopRow = null;
     }
@@ -948,6 +996,12 @@ function updatePendingMembers(startRow, numRows) {
     sheet.getRef().getRange(startRow, sheet.getColumn("Member/Unit"), dataRows, 1).setValues(
       sliceSingleColumn(allData, 0, dataRows, sheet.getColumn("Member/Unit") - 1)
     );
+  }
+  
+  // Flush spreadsheet changes and release the lock if it wasn't inherited
+  SpreadsheetApp.flush();
+  if (! parentLock) {
+    lock.releaseLock();
   }
 }
 
